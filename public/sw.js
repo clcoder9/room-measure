@@ -1,4 +1,4 @@
-const CACHE_NAME = 'spatial-measure-v1';
+const CACHE_NAME = 'spatial-measure-__BUILD_VERSION__';
 const PRECACHE_ASSETS = [
   './',
   './index.html',
@@ -27,6 +27,12 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
 self.addEventListener('fetch', (event) => {
   // Only handle GET requests
   if (event.request.method !== 'GET') return;
@@ -36,13 +42,45 @@ self.addEventListener('fetch', (event) => {
   // Skip browser-extension or non-http requests
   if (!url.protocol.startsWith('http')) return;
 
+  // Always bypass cache for version check manifest
+  if (url.pathname.endsWith('/version.json')) {
+    event.respondWith(fetch(event.request, { cache: 'no-store' }));
+    return;
+  }
+
+  // Network-first for HTML navigations so new deployments load immediately
+  const isHtmlRequest =
+    event.request.mode === 'navigate' ||
+    event.request.headers.get('accept')?.includes('text/html');
+
+  if (isHtmlRequest) {
+    event.respondWith(
+      fetch(event.request, { cache: 'no-cache' })
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+            const responseToCache = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseToCache));
+          }
+          return networkResponse;
+        })
+        .catch(async () => {
+          return (
+            (await caches.match(event.request)) ||
+            (await caches.match('./index.html')) ||
+            (await caches.match('./'))
+          );
+        })
+    );
+    return;
+  }
+
+  // Stale-while-revalidate for versioned static assets
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
       if (cachedResponse) {
-        // Fetch updated version in background (stale-while-revalidate)
         fetch(event.request)
           .then((networkResponse) => {
-            if (networkResponse && networkResponse.status === 200) {
+            if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
               caches.open(CACHE_NAME).then((cache) => cache.put(event.request, networkResponse));
             }
           })
@@ -52,24 +90,16 @@ self.addEventListener('fetch', (event) => {
         return cachedResponse;
       }
 
-      return fetch(event.request)
-        .then((networkResponse) => {
-          if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
-            return networkResponse;
-          }
-          const responseToCache = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseToCache);
-          });
+      return fetch(event.request).then((networkResponse) => {
+        if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
           return networkResponse;
-        })
-        .catch(() => {
-          // If offline and request is HTML, return cached index
-          if (event.request.headers.get('accept')?.includes('text/html')) {
-            return caches.match('./index.html');
-          }
-          return Promise.reject(new Error('Network offline'));
+        }
+        const responseToCache = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, responseToCache);
         });
+        return networkResponse;
+      });
     })
   );
 });

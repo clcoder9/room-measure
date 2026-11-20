@@ -4,17 +4,132 @@ import { XRManager } from './xr/XRManager';
 import { UIManager, UIElements } from './ui/UIManager';
 import { SnapshotManager } from './ui/SnapshotManager';
 
+let isRefreshing = false;
+
+function isOnLandingScreen(): boolean {
+  const arOverlay = document.getElementById('ar-overlay');
+  return !arOverlay || arOverlay.classList.contains('hidden');
+}
+
+function showUpdateBanner(): void {
+  const arOverlay = document.getElementById('ar-overlay');
+  const host = isOnLandingScreen() ? document.body : (arOverlay ?? document.body);
+  let banner = document.getElementById('update-banner');
+
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'update-banner';
+    banner.className = 'update-banner';
+    banner.setAttribute('role', 'status');
+
+    const msg = document.createElement('span');
+    msg.textContent = 'New app version deployed';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'update-banner-btn';
+    btn.textContent = 'Reload Now';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!isRefreshing) {
+        isRefreshing = true;
+        window.location.reload();
+      }
+    });
+
+    banner.addEventListener('beforexrselect', (e) => {
+      e.preventDefault();
+    });
+
+    banner.appendChild(msg);
+    banner.appendChild(btn);
+  }
+
+  if (banner.parentElement !== host) {
+    host.appendChild(banner);
+  }
+}
+
+function handleNewVersionAvailable(): void {
+  if (isOnLandingScreen()) {
+    if (!isRefreshing) {
+      isRefreshing = true;
+      window.location.reload();
+    }
+  } else {
+    showUpdateBanner();
+  }
+}
+
+async function checkRemoteVersion(reg?: ServiceWorkerRegistration): Promise<void> {
+  try {
+    const res = await fetch(`./version.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const remote = (await res.json()) as { version?: string };
+    if (remote.version && remote.version !== __APP_VERSION__) {
+      console.log(`[PWA] New version detected: ${remote.version} (current: ${__APP_VERSION__})`);
+      if (reg) {
+        await reg.update().catch(() => {});
+        if (reg.waiting) {
+          reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+        }
+      }
+      showUpdateBanner();
+    }
+  } catch {
+    // Ignore offline or transient fetch errors
+  }
+}
+
 // Register PWA Service Worker only in production; unregister stale SWs in development
 if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
   window.addEventListener('load', () => {
     if (import.meta.env.PROD) {
+      const hadController = Boolean(navigator.serviceWorker.controller);
+
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (hadController) {
+          handleNewVersionAvailable();
+        }
+      });
+
       navigator.serviceWorker
-        .register('./sw.js')
+        .register('./sw.js', { updateViaCache: 'none' })
         .then((reg) => {
           console.log('[PWA] ServiceWorker registered with scope:', reg.scope);
+
+          if (reg.waiting && navigator.serviceWorker.controller) {
+            reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+          }
+
+          reg.addEventListener('updatefound', () => {
+            const newWorker = reg.installing;
+            if (!newWorker) return;
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                newWorker.postMessage({ type: 'SKIP_WAITING' });
+              }
+            });
+          });
+
+          const runUpdateCheck = () => {
+            reg.update().catch(() => {});
+            void checkRemoteVersion(reg);
+          };
+
+          runUpdateCheck();
+
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+              runUpdateCheck();
+            }
+          });
+
+          window.setInterval(runUpdateCheck, 60_000);
         })
         .catch((err) => {
           console.warn('[PWA] ServiceWorker registration failed:', err);
+          void checkRemoteVersion();
         });
     } else {
       navigator.serviceWorker.getRegistrations().then((registrations) => {
@@ -29,6 +144,11 @@ if ('serviceWorker' in navigator && window.location.protocol.startsWith('http'))
 function initApp(): void {
   const container = document.getElementById('canvas-container')!;
   const overlayElement = document.getElementById('ar-overlay')!;
+
+  const versionLabel = document.getElementById('app-version-label');
+  if (versionLabel) {
+    versionLabel.textContent = `Build: ${__APP_VERSION__}`;
+  }
 
   const uiElements: UIElements = {
     landingScreen: document.getElementById('landing-screen')!,
