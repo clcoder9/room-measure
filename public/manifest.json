@@ -1,0 +1,25 @@
+{
+  "name": "SpatialMeasure AR - Room & Volume Dimensions",
+  "short_name": "SpatialMeasure",
+  "description": "Mobile WebXR PWA for spatial room dimensions, floor area, and volumetric measurement",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#090d16",
+  "theme_color": "#090d16",
+  "orientation": "portrait-primary",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    {
+      "src": "./icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
