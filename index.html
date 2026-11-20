@@ -20,15 +20,82 @@
     <div id="landing-screen" class="landing-screen">
       <div class="landing-card">
         <div class="brand">
-          <div class="brand-icon" aria-hidden="true">
-            <svg viewBox="0 0 192 192" width="48" height="48">
-              <path d="M96 36 L154 68 L154 132 L96 164 L38 132 L38 68 Z" fill="none" stroke="#00f2fe" stroke-width="8" stroke-linejoin="round" />
-              <path d="M38 68 L96 100 L154 68" fill="none" stroke="#38bdf8" stroke-width="6" stroke-linejoin="round" />
-              <circle cx="96" cy="100" r="14" fill="none" stroke="#00f2fe" stroke-width="4" />
+          <div class="hero-logo-wrap" aria-hidden="true">
+            <svg class="hero-logo-svg" viewBox="0 0 240 200" width="168" height="140">
+              <defs>
+                <radialGradient id="logo-aura" cx="50%" cy="52%" r="50%">
+                  <stop offset="0%" stop-color="#00f2fe" stop-opacity="0.28" />
+                  <stop offset="60%" stop-color="#38bdf8" stop-opacity="0.08" />
+                  <stop offset="100%" stop-color="#090d16" stop-opacity="0" />
+                </radialGradient>
+                <linearGradient id="wall-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stop-color="#00f2fe" stop-opacity="0.24" />
+                  <stop offset="100%" stop-color="#0284c7" stop-opacity="0.05" />
+                </linearGradient>
+                <linearGradient id="floor-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#00f2fe" stop-opacity="0.22" />
+                  <stop offset="100%" stop-color="#10b981" stop-opacity="0.16" />
+                </linearGradient>
+                <linearGradient id="beam-grad" x1="0%" y1="100%" x2="0%" y2="0%">
+                  <stop offset="0%" stop-color="#00f2fe" stop-opacity="0.7" />
+                  <stop offset="100%" stop-color="#00f2fe" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+
+              <!-- Radial Glow Backdrop -->
+              <circle cx="120" cy="104" r="88" fill="url(#logo-aura)" />
+
+              <!-- Subtle Floor Spatial Grid Lines -->
+              <g stroke="#38bdf8" stroke-opacity="0.18" stroke-width="1">
+                <line x1="36" y1="132" x2="120" y2="88" />
+                <line x1="204" y1="132" x2="120" y2="88" />
+                <line x1="58" y1="145" x2="142" y2="100" />
+                <line x1="182" y1="145" x2="98" y2="100" />
+              </g>
+
+              <!-- Extruded Room Floor Polygon -->
+              <polygon points="120,94 188,128 120,164 52,128" fill="url(#floor-grad)" stroke="#00f2fe" stroke-width="2.5" stroke-linejoin="round" />
+
+              <!-- Translucent Holographic Walls -->
+              <polygon points="52,128 120,94 120,42 52,76" fill="url(#wall-grad)" stroke="#38bdf8" stroke-opacity="0.55" stroke-width="1.5" stroke-linejoin="round" />
+              <polygon points="120,94 188,128 188,76 120,42" fill="url(#wall-grad)" stroke="#38bdf8" stroke-opacity="0.55" stroke-width="1.5" stroke-linejoin="round" />
+
+              <!-- Vertical Corner Laser Beacons & Dashed Ceiling Edges -->
+              <line x1="52" y1="128" x2="52" y2="66" stroke="url(#beam-grad)" stroke-width="2" />
+              <line x1="188" y1="128" x2="188" y2="66" stroke="url(#beam-grad)" stroke-width="2" />
+              <line x1="120" y1="94" x2="120" y2="32" stroke="url(#beam-grad)" stroke-width="2" />
+              <line x1="120" y1="164" x2="120" y2="108" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4 3" />
+              <polyline points="52,76 120,42 188,76" fill="none" stroke="#00f2fe" stroke-width="1.5" stroke-dasharray="4 4" stroke-opacity="0.7" />
+
+              <!-- Central Pulsing AR Target Reticle -->
+              <g class="logo-reticle">
+                <ellipse cx="120" cy="129" rx="16" ry="9" fill="none" stroke="#00f2fe" stroke-width="2" stroke-opacity="0.9" />
+                <ellipse cx="120" cy="129" rx="7" ry="4" fill="none" stroke="#38bdf8" stroke-width="1.5" />
+                <circle cx="120" cy="129" r="2.2" fill="#ffffff" />
+              </g>
+
+              <!-- 4 Corner Anchor Nodes (#1 Emerald Start + #2-#4 Cyan) -->
+              <circle cx="120" cy="164" r="6" fill="#10b981" stroke="#090d16" stroke-width="2" />
+              <circle cx="52" cy="128" r="5" fill="#00f2fe" stroke="#090d16" stroke-width="2" />
+              <circle cx="120" cy="94" r="5" fill="#00f2fe" stroke="#090d16" stroke-width="2" />
+              <circle cx="188" cy="128" r="5" fill="#00f2fe" stroke="#090d16" stroke-width="2" />
+              <circle cx="120" cy="42" r="4.5" fill="#f59e0b" stroke="#090d16" stroke-width="1.5" />
+
+              <!-- Floating Dimension Callout Badges -->
+              <g font-family="system-ui, -apple-system, sans-serif" font-size="9.5" font-weight="700" text-anchor="middle">
+                <rect x="34" y="144" width="40" height="17" rx="5" fill="#0f172a" fill-opacity="0.92" stroke="#00f2fe" stroke-width="1" />
+                <text x="54" y="155.5" fill="#f8fafc">4.2m</text>
+
+                <rect x="166" y="144" width="40" height="17" rx="5" fill="#0f172a" fill-opacity="0.92" stroke="#00f2fe" stroke-width="1" />
+                <text x="186" y="155.5" fill="#f8fafc">3.6m</text>
+
+                <rect x="132" y="24" width="48" height="17" rx="5" fill="#0f172a" fill-opacity="0.92" stroke="#f59e0b" stroke-width="1" />
+                <text x="156" y="35.5" fill="#fbbf24">H: 2.7m</text>
+              </g>
             </svg>
           </div>
           <h1>SpatialMeasure AR</h1>
-          <p class="subtitle">Room Dimensions &amp; Volumetric PWA</p>
+          <p class="subtitle">3D Room Dimensions, Floor Plan &amp; Volumetric Scanner</p>
         </div>
 
         <div id="device-support-card" class="compat-card">
@@ -37,16 +104,6 @@
             <span id="compat-label">Checking WebXR AR capability...</span>
           </div>
           <div id="depth-support-hint" class="compat-subtext">Target: Chrome on Android (Pixel Pro / ARCore)</div>
-        </div>
-
-        <div class="workflow-guide">
-          <h3>Measurement Workflow</h3>
-          <ol>
-            <li><strong>Floor Surface:</strong> Aim camera to detect horizontal floor plane.</li>
-            <li><strong>Pin Corners:</strong> Tap screen to place anchor pins with 90° ortho snap.</li>
-            <li><strong>Floor Area:</strong> Close polygon (or snap to #1) for Shoelace area.</li>
-            <li><strong>Ceiling &amp; Volume:</strong> Aim at ceiling or top of wall to measure height &amp; volume.</li>
-          </ol>
         </div>
 
         <div class="launch-actions">
@@ -58,14 +115,76 @@
             <span class="btn-icon" aria-hidden="true">🖥️</span>
             <span>Launch 3D Simulator (Desktop)</span>
           </button>
+          <button type="button" id="btn-open-help" class="btn btn-ghost-help">
+            <span class="btn-icon" aria-hidden="true">❓</span>
+            <span>How to Use &amp; Measurement Guide</span>
+          </button>
         </div>
 
         <div class="footer-note">
-          Supports WebXR <code>hit-test</code>, <code>dom-overlay</code>, and secondary <code>depth-sensing</code> probe.
+          Supports WebXR <code>hit-test</code>, <code>dom-overlay</code> &amp; <code>depth-sensing</code>.
           <div id="app-version-label" class="version-label"></div>
         </div>
       </div>
     </div>
+
+    <!-- Native Help / How to Use Modal Dialog -->
+    <dialog id="help-modal" class="help-dialog" closedby="any" aria-labelledby="help-modal-title">
+      <div class="help-dialog-shell">
+        <div class="modal-header">
+          <h2 id="help-modal-title">How to Use SpatialMeasure AR</h2>
+          <button type="button" id="help-close-btn" class="modal-close icon-button" aria-label="Close help dialog">✕</button>
+        </div>
+        <div class="modal-body help-modal-body">
+          <div class="help-steps-grid">
+            <div class="help-step-card">
+              <span class="help-step-num">1</span>
+              <div>
+                <strong>Scan Floor Surface</strong>
+                <p>Aim camera at the floor and sweep slowly to detect the horizontal surface plane.</p>
+              </div>
+            </div>
+            <div class="help-step-card">
+              <span class="help-step-num">2</span>
+              <div>
+                <strong>Pin Corners (90° Snap)</strong>
+                <p>Tap screen or <em>Pin Corner</em> to place corner anchors with automatic 90° ortho snapping.</p>
+              </div>
+            </div>
+            <div class="help-step-card">
+              <span class="help-step-num">3</span>
+              <div>
+                <strong>Close Floor Area</strong>
+                <p>Snap back to corner #1 or tap <em>Close Floor</em> to compute Shoelace floor area &amp; perimeter.</p>
+              </div>
+            </div>
+            <div class="help-step-card">
+              <span class="help-step-num">4</span>
+              <div>
+                <strong>Ceiling &amp; 3D Volume</strong>
+                <p>Aim at ceiling or top of wall and pin height to extrude room volume &amp; wall surface area.</p>
+              </div>
+            </div>
+          </div>
+
+          <section class="modal-section">
+            <div class="modal-section-title">Live Session Tools</div>
+            <ul class="help-tools-list">
+              <li><strong>2D Radar Plan:</strong> Tap top-right mini-map to expand &amp; drag corners to fine-tune.</li>
+              <li><strong>Doors &amp; Windows (Openings):</strong> Subtract presets or custom openings for Net Wall Area.</li>
+              <li><strong>Export &amp; Photo:</strong> Download SVG blueprints, JSON reports, or composite AR snapshots.</li>
+            </ul>
+          </section>
+
+          <p class="help-compat-note">
+            Uses WebXR <code>hit-test</code>, <code>dom-overlay</code>, and optional <code>depth-sensing</code> on Chrome Android (ARCore), plus an interactive Desktop 3D Simulator.
+          </p>
+        </div>
+        <form method="dialog" class="help-dialog-footer">
+          <button type="submit" class="btn btn-primary" autofocus>Got It</button>
+        </form>
+      </div>
+    </dialog>
 
     <!-- WebXR DOM Overlay Root (Visible during AR session) -->
     <div id="ar-overlay" class="ar-overlay hidden">
@@ -177,53 +296,53 @@
 
       <!-- Shutter Flash Animation Screen -->
       <div id="shutter-flash" class="shutter-flash hidden" aria-hidden="true"></div>
-    </div>
 
-    <!-- Export, Openings & Saved Rooms Modal Dialog -->
-    <div id="export-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h3 id="export-modal-title">Room Summary, Openings &amp; History</h3>
-          <button type="button" id="modal-close-btn" class="modal-close icon-button" aria-label="Close modal">✕</button>
-        </div>
-        <div id="modal-content" class="modal-body">
-          <!-- Populated dynamically by UIManager -->
-        </div>
-        <pre id="summary-report-pre" class="sr-only"></pre>
-        <div class="modal-actions">
-          <button type="button" id="btn-modal-restart" class="btn btn-secondary">🔄 New Room</button>
-          <span class="copy">
-            <button
-              type="button"
-              id="btn-copy-summary"
-              class="btn btn-secondary copy-button"
-              command="--copy"
-              commandfor="summary-report-pre"
-            >
-              <span class="copy-icon" aria-hidden="true">📋</span>
-              <span>Copy</span>
-            </button>
-            <span class="tip" role="status"></span>
-          </span>
-          <button type="button" id="btn-download-svg" class="btn btn-secondary">📐 SVG Plan</button>
-          <button type="button" id="btn-download-json" class="btn btn-primary">💾 JSON</button>
+      <!-- Export, Openings & Saved Rooms Modal Dialog (inside #ar-overlay for WebXR dom-overlay) -->
+      <div id="export-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
+        <div class="modal-card">
+          <div class="modal-header">
+            <h3 id="export-modal-title">Room Summary, Openings &amp; History</h3>
+            <button type="button" id="modal-close-btn" class="modal-close icon-button" aria-label="Close modal">✕</button>
+          </div>
+          <div id="modal-content" class="modal-body">
+            <!-- Populated dynamically by UIManager -->
+          </div>
+          <pre id="summary-report-pre" class="sr-only"></pre>
+          <div class="modal-actions">
+            <button type="button" id="btn-modal-restart" class="btn btn-secondary">🔄 New Room</button>
+            <span class="copy">
+              <button
+                type="button"
+                id="btn-copy-summary"
+                class="btn btn-secondary copy-button"
+                command="--copy"
+                commandfor="summary-report-pre"
+              >
+                <span class="copy-icon" aria-hidden="true">📋</span>
+                <span>Copy</span>
+              </button>
+              <span class="tip" role="status"></span>
+            </span>
+            <button type="button" id="btn-download-svg" class="btn btn-secondary">📐 SVG Plan</button>
+            <button type="button" id="btn-download-json" class="btn btn-primary">💾 JSON</button>
+          </div>
         </div>
       </div>
-    </div>
 
-    <!-- Screenshot Preview Modal Dialog -->
-    <div id="screenshot-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="screenshot-modal-title">
-      <div class="modal-card screenshot-modal-card">
-        <div class="modal-header">
-          <h3 id="screenshot-modal-title">AR Measurement Photo</h3>
-          <button type="button" id="screenshot-close-btn" class="modal-close icon-button" aria-label="Close photo modal">✕</button>
-        </div>
-        <div class="modal-body screenshot-modal-body">
-          <img id="screenshot-preview-img" class="screenshot-preview-img" alt="AR Measurement Capture" />
-        </div>
-        <div class="modal-actions">
-          <button type="button" id="btn-share-screenshot" class="btn btn-primary">📤 Share / Save Photo</button>
-          <button type="button" id="btn-download-screenshot" class="btn btn-secondary">💾 Download PNG</button>
+      <!-- Screenshot Preview Modal Dialog (inside #ar-overlay for WebXR dom-overlay) -->
+      <div id="screenshot-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="screenshot-modal-title">
+        <div class="modal-card screenshot-modal-card">
+          <div class="modal-header">
+            <h3 id="screenshot-modal-title">AR Measurement Photo</h3>
+            <button type="button" id="screenshot-close-btn" class="modal-close icon-button" aria-label="Close photo modal">✕</button>
+          </div>
+          <div class="modal-body screenshot-modal-body">
+            <img id="screenshot-preview-img" class="screenshot-preview-img" alt="AR Measurement Capture" />
+          </div>
+          <div class="modal-actions">
+            <button type="button" id="btn-share-screenshot" class="btn btn-primary">📤 Share / Save Photo</button>
+            <button type="button" id="btn-download-screenshot" class="btn btn-secondary">💾 Download PNG</button>
+          </div>
         </div>
       </div>
     </div>

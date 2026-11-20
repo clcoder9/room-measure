@@ -16,6 +16,9 @@ export interface UIElements {
   wallAreaSummary: HTMLElement;
   btnStartAR: HTMLButtonElement;
   btnStartSim: HTMLButtonElement;
+  btnOpenHelp?: HTMLButtonElement | null;
+  helpModal?: HTMLDialogElement | null;
+  helpCloseBtn?: HTMLButtonElement | null;
   btnExitSession: HTMLButtonElement;
   btnRestartSession: HTMLButtonElement;
   btnHudScreenshot: HTMLButtonElement;
@@ -64,6 +67,9 @@ export class UIManager {
   private onPinRequested: () => void;
   private onExitRequested: () => void;
   private onRestartSessionRequested: () => Promise<void> | void;
+  private btnOpenHelp: HTMLButtonElement | null;
+  private helpModal: HTMLDialogElement | null;
+  private helpCloseBtn: HTMLButtonElement | null;
 
   constructor(
     els: UIElements,
@@ -79,6 +85,12 @@ export class UIManager {
     this.onPinRequested = callbacks.onPinRequested;
     this.onExitRequested = callbacks.onExitRequested;
     this.onRestartSessionRequested = callbacks.onRestartSessionRequested;
+    this.btnOpenHelp =
+      els.btnOpenHelp ?? (document.getElementById('btn-open-help') as HTMLButtonElement | null);
+    this.helpModal =
+      els.helpModal ?? (document.getElementById('help-modal') as HTMLDialogElement | null);
+    this.helpCloseBtn =
+      els.helpCloseBtn ?? (document.getElementById('help-close-btn') as HTMLButtonElement | null);
 
     this.miniMap = new MiniMap(this.els.arOverlay, (index, wx, wz) => {
       this.roomManager.updateFloorPoint(index, wx, wz);
@@ -87,6 +99,7 @@ export class UIManager {
     this.syncToggleButtons();
     this.initToolbarFocusFallback();
     this.initCopyInvokerHandlers();
+    this.initHelpDialogHandlers();
     this.attachEventListeners();
 
     this.roomManager.setOnStateChange(this.renderMetrics.bind(this));
@@ -102,6 +115,47 @@ export class UIManager {
 
   public getMiniMap(): MiniMap {
     return this.miniMap;
+  }
+
+  public isInteractionBlocked(): boolean {
+    return (
+      !this.els.exportModal.classList.contains('hidden') ||
+      !this.els.screenshotModal.classList.contains('hidden') ||
+      Boolean(this.helpModal?.open) ||
+      this.miniMap.isExpandedView()
+    );
+  }
+
+  private initHelpDialogHandlers(): void {
+    this.btnOpenHelp?.addEventListener('click', () => {
+      if (this.helpModal && !this.helpModal.open) {
+        this.helpModal.showModal();
+      }
+    });
+
+    this.helpCloseBtn?.addEventListener('click', () => {
+      this.helpModal?.close();
+    });
+
+    // Fallback light-dismiss for browsers without <dialog closedby="any">
+    if (!('closedBy' in HTMLDialogElement.prototype)) {
+      const outside = (e: PointerEvent, dialog: HTMLDialogElement) => {
+        const r = dialog.getBoundingClientRect();
+        return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+      };
+      for (const dialog of document.querySelectorAll<HTMLDialogElement>('dialog[closedby="any"]')) {
+        let pressedOutside = false;
+        dialog.addEventListener('pointerdown', (e) => {
+          pressedOutside = outside(e, dialog);
+        });
+        dialog.addEventListener('pointerup', (e) => {
+          if (pressedOutside && outside(e, dialog)) {
+            dialog.close();
+          }
+          pressedOutside = false;
+        });
+      }
+    }
   }
 
   private syncToggleButtons(): void {
@@ -410,6 +464,20 @@ export class UIManager {
       this.closeExportModal();
     });
 
+    this.els.exportModal.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (e.target === this.els.exportModal) {
+        this.closeExportModal();
+      }
+    });
+
+    this.els.screenshotModal.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (e.target === this.els.screenshotModal) {
+        this.closeScreenshotModal();
+      }
+    });
+
     this.els.btnDownloadSvg.addEventListener('click', (e) => {
       e.stopPropagation();
       const nameInput = document.getElementById('room-name-input') as HTMLInputElement | null;
@@ -440,6 +508,9 @@ export class UIManager {
   }
 
   public showAROverlay(): void {
+    this.helpModal?.close();
+    this.closeExportModal();
+    this.closeScreenshotModal();
     this.els.landingScreen.classList.add('hidden');
     this.els.arOverlay.classList.remove('hidden');
     this.renderMetrics(this.roomManager.getMetrics());
@@ -544,8 +615,20 @@ export class UIManager {
     this.els.readoutVolume.textContent =
       metrics.volume > 0 ? formatVolume(metrics.volume, unit, false) : '--';
 
+    const openingsLabelSpan = this.els.btnOpenings.querySelector('span:last-child');
+    if (openingsLabelSpan) {
+      openingsLabelSpan.textContent =
+        metrics.openingsCount > 0 ? `Openings (${metrics.openingsCount})` : 'Openings';
+    }
+
     if (metrics.grossWallArea > 0) {
-      this.els.wallAreaSummary.textContent = `Gross Wall: ${formatArea(metrics.grossWallArea, unit, false)} • Net Wall: ${formatArea(metrics.netWallArea, unit, false)}`;
+      this.els.wallAreaSummary.textContent =
+        metrics.openingsCount > 0
+          ? `Gross Wall: ${formatArea(metrics.grossWallArea, unit, false)} • Openings (${metrics.openingsCount}): -${formatArea(metrics.openingsArea, unit, false)} • Net: ${formatArea(metrics.netWallArea, unit, false)}`
+          : `Gross Wall: ${formatArea(metrics.grossWallArea, unit, false)} • Net Wall: ${formatArea(metrics.netWallArea, unit, false)}`;
+      this.els.wallAreaSummary.classList.remove('hidden');
+    } else if (metrics.openingsCount > 0) {
+      this.els.wallAreaSummary.textContent = `Openings (${metrics.openingsCount}): -${formatArea(metrics.openingsArea, unit, false)} queued (pin ceiling for Net Wall Area)`;
       this.els.wallAreaSummary.classList.remove('hidden');
     } else {
       this.els.wallAreaSummary.classList.add('hidden');
@@ -590,6 +673,18 @@ export class UIManager {
 
     const totalSavedArea = savedRooms.reduce((acc, r) => acc + r.metrics.floorAreaSqMeters, 0);
     const totalSavedVol = savedRooms.reduce((acc, r) => acc + r.metrics.roomVolumeCuMeters, 0);
+    const isImperial = unit === 'imperial';
+    const unitShort = isImperial ? 'ft' : 'm';
+    const defaultW = isImperial ? '3.0' : '0.9';
+    const defaultH = isImperial ? '6.9' : '2.1';
+    const openingsSubBadge =
+      data.metrics.openingsAreaSqMeters > 0
+        ? ` • -${formatArea(data.metrics.openingsAreaSqMeters, unit, false)}`
+        : '';
+    const netWallNote =
+      data.metrics.grossWallAreaSqMeters === 0
+        ? '<span style="font-size:0.68rem; color:#94a3b8; margin-top:0.2rem;">Pin ceiling height to compute Net Wall Area</span>'
+        : '';
 
     this.els.modalContent.innerHTML = `
       <div class="summary-grid">
@@ -616,25 +711,26 @@ export class UIManager {
         <div class="summary-item">
           <span class="label">Net Wall Area</span>
           <span class="val highlight">${data.metrics.formatted.netWallArea}</span>
+          ${netWallNote}
         </div>
       </div>
 
       <section id="modal-openings-section" class="modal-section">
-        <div class="modal-section-title">Doors &amp; Windows (${data.openings.length})</div>
+        <div class="modal-section-title">Doors &amp; Windows (${data.openings.length}${openingsSubBadge})</div>
         <div class="preset-row">
-          <button type="button" class="btn-chip" data-preset-opening="door:0.9:2.1:Standard Door">+ Standard Door (0.9×2.1m)</button>
-          <button type="button" class="btn-chip" data-preset-opening="door:1.6:2.1:Double Door">+ Double Door (1.6×2.1m)</button>
-          <button type="button" class="btn-chip" data-preset-opening="window:1.2:1.2:Window">+ Window (1.2×1.2m)</button>
-          <button type="button" class="btn-chip" data-preset-opening="window:1.8:1.5:Large Window">+ Large Window (1.8×1.5m)</button>
+          <button type="button" class="btn-chip" data-preset-opening="door:0.9:2.1:Standard Door">+ Standard Door (${formatDistance(0.9, unit)} × ${formatDistance(2.1, unit)})</button>
+          <button type="button" class="btn-chip" data-preset-opening="door:1.6:2.1:Double Door">+ Double Door (${formatDistance(1.6, unit)} × ${formatDistance(2.1, unit)})</button>
+          <button type="button" class="btn-chip" data-preset-opening="window:1.2:1.2:Window">+ Window (${formatDistance(1.2, unit)} × ${formatDistance(1.2, unit)})</button>
+          <button type="button" class="btn-chip" data-preset-opening="window:1.8:1.5:Large Window">+ Large Window (${formatDistance(1.8, unit)} × ${formatDistance(1.5, unit)})</button>
         </div>
         <div class="custom-opening-form">
           <select id="custom-opening-type" class="modal-input" aria-label="Opening type">
             <option value="door">Door</option>
             <option value="window">Window</option>
           </select>
-          <input id="custom-opening-w" class="modal-input" type="number" step="0.05" min="0.1" value="0.9" aria-label="Width in meters" placeholder="Width (m)" />
-          <input id="custom-opening-h" class="modal-input" type="number" step="0.05" min="0.1" value="2.1" aria-label="Height in meters" placeholder="Height (m)" />
-          <button type="button" id="btn-add-custom-opening" class="btn-mini">+ Add</button>
+          <input id="custom-opening-w" class="modal-input" type="number" step="0.05" min="0.1" value="${defaultW}" aria-label="Width in ${isImperial ? 'feet' : 'meters'}" placeholder="Width (${unitShort})" />
+          <input id="custom-opening-h" class="modal-input" type="number" step="0.05" min="0.1" value="${defaultH}" aria-label="Height in ${isImperial ? 'feet' : 'meters'}" placeholder="Height (${unitShort})" />
+          <button type="button" id="btn-add-custom-opening" class="btn-mini">+ Add (${unitShort})</button>
         </div>
         <div class="list-stack">
           ${
@@ -745,12 +841,15 @@ export class UIManager {
       const wEl = content.querySelector<HTMLInputElement>('#custom-opening-w');
       const hEl = content.querySelector<HTMLInputElement>('#custom-opening-h');
       const type = typeEl?.value === 'window' ? 'window' : 'door';
-      const w = parseFloat(wEl?.value || '0.9');
-      const h = parseFloat(hEl?.value || '2.1');
-      if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+      const rawW = parseFloat(wEl?.value || '');
+      const rawH = parseFloat(hEl?.value || '');
+      if (!Number.isFinite(rawW) || !Number.isFinite(rawH) || rawW <= 0 || rawH <= 0) {
         this.showToast('Enter valid opening dimensions');
         return;
       }
+      const scaleToMeters = this.roomManager.getUnitSystem() === 'imperial' ? 0.3048 : 1;
+      const w = rawW * scaleToMeters;
+      const h = rawH * scaleToMeters;
       this.roomManager.addOpening(type, w, h, type === 'door' ? 'Custom Door' : 'Custom Window');
       this.renderExportModalBody();
       this.showToast('Opening added');
@@ -893,7 +992,8 @@ export class UIManager {
     const toast = document.createElement('div');
     toast.className = 'toast';
     toast.textContent = msg;
-    document.body.appendChild(toast);
+    const host = this.els.arOverlay.classList.contains('hidden') ? document.body : this.els.arOverlay;
+    host.appendChild(toast);
     setTimeout(() => {
       toast.classList.add('show');
     }, 10);

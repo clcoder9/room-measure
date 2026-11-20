@@ -13,6 +13,7 @@ export interface XRManagerOptions {
   onSessionEnded?: () => void;
   onStatusMessage?: (msg: string) => void;
   onRenderFrame?: (reticlePos: THREE.Vector3 | null, camera: THREE.Camera) => void;
+  isInteractionBlocked?: () => boolean;
 }
 
 export interface FramePixelData {
@@ -52,6 +53,7 @@ export class XRManager {
   private onSessionEnded?: () => void;
   private onStatusMessage?: (msg: string) => void;
   private onRenderFrame?: (reticlePos: THREE.Vector3 | null, camera: THREE.Camera) => void;
+  private isInteractionBlocked?: () => boolean;
 
   constructor(options: XRManagerOptions) {
     this.container = options.container;
@@ -60,6 +62,7 @@ export class XRManager {
     this.onSessionEnded = options.onSessionEnded;
     this.onStatusMessage = options.onStatusMessage;
     this.onRenderFrame = options.onRenderFrame;
+    this.isInteractionBlocked = options.isInteractionBlocked;
 
     // Three.js Scene Setup
     this.scene = new THREE.Scene();
@@ -485,13 +488,14 @@ export class XRManager {
       this.depthExplorer.probeFrame(frame, this.xrRefSpace, timestamp);
     }
 
-    if (this.onRenderFrame) {
-      const retPos = this.reticle.visible ? this.reticle.getWorldPositionTarget() : null;
-      this.onRenderFrame(retPos, this.camera);
-    }
-
     this.renderer.render(this.scene, this.camera);
     this.fulfillPendingFrameCapture();
+
+    if (this.onRenderFrame) {
+      const retPos = this.reticle.visible ? this.reticle.getWorldPositionTarget() : null;
+      const activeCam = this.renderer.xr.isPresenting ? this.renderer.xr.getCamera() : this.camera;
+      this.onRenderFrame(retPos, activeCam);
+    }
   }
 
   /**
@@ -534,6 +538,7 @@ export class XRManager {
    * Triggered when user taps the screen in WebXR
    */
   private onXRSelect(): void {
+    if (this.isInteractionBlocked?.()) return;
     if (this.reticle.visible) {
       const pos = this.reticle.getWorldPositionTarget();
       this.roomManager.pinCurrentPosition(pos);
@@ -594,8 +599,17 @@ export class XRManager {
     if (this.xrSession) {
       try {
         this.cancelHitTestSource();
-        const refSpace = await this.xrSession.requestReferenceSpace('local');
+        let refSpace: XRReferenceSpace;
+        let chosenRefSpaceType: XRReferenceSpaceType = 'local';
+        try {
+          refSpace = await this.xrSession.requestReferenceSpace('local-floor');
+          chosenRefSpaceType = 'local-floor';
+        } catch {
+          refSpace = await this.xrSession.requestReferenceSpace('local');
+          chosenRefSpaceType = 'local';
+        }
         this.xrRefSpace = refSpace;
+        this.renderer.xr.setReferenceSpaceType(chosenRefSpaceType);
         this.renderer.xr.setReferenceSpace(refSpace);
 
         const viewerSpace = await this.xrSession.requestReferenceSpace('viewer');
@@ -670,6 +684,7 @@ export class XRManager {
 
   private onPointerUpSim(e: PointerEvent): void {
     if (!this.isSimulatedMode) return;
+    if (this.isInteractionBlocked?.()) return;
     if (e.button !== 0 || this.simPointerDownPos.button !== 0) return;
 
     const dragDist = Math.hypot(

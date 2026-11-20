@@ -161,6 +161,9 @@ function initApp(): void {
     wallAreaSummary: document.getElementById('wall-area-summary')!,
     btnStartAR: document.getElementById('btn-start-ar') as HTMLButtonElement,
     btnStartSim: document.getElementById('btn-start-sim') as HTMLButtonElement,
+    btnOpenHelp: document.getElementById('btn-open-help') as HTMLButtonElement | null,
+    helpModal: document.getElementById('help-modal') as HTMLDialogElement | null,
+    helpCloseBtn: document.getElementById('help-close-btn') as HTMLButtonElement | null,
     btnExitSession: document.getElementById('btn-exit-session') as HTMLButtonElement,
     btnRestartSession: document.getElementById('btn-restart-session') as HTMLButtonElement,
     btnHudScreenshot: document.getElementById('btn-hud-screenshot') as HTMLButtonElement,
@@ -222,7 +225,8 @@ function initApp(): void {
           camera
         );
       }
-    }
+    },
+    isInteractionBlocked: () => (uiManager ? uiManager.isInteractionBlocked() : false)
   });
 
   // Initialize UI Manager

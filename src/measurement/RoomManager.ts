@@ -48,6 +48,7 @@ export interface RoomMetrics {
   volume: number; // m³
   grossWallArea: number; // m²
   openingsArea: number; // m²
+  openingsCount: number;
   netWallArea: number; // m²
   isSnappedToStart: boolean;
   isOrthoSnapped: boolean;
@@ -115,6 +116,7 @@ export class RoomManager {
     liveAngleDeg: null,
     effectiveReticlePos: null
   };
+  private lastLiveDistance: number = 0;
 
   private visuals: MeasurementVisuals;
   private onStateChangeCallback?: (metrics: RoomMetrics) => void;
@@ -314,8 +316,17 @@ export class RoomManager {
         return true;
       }
 
+      if (this.floorPoints.length > 0) {
+        const lastPt = this.floorPoints[this.floorPoints.length - 1];
+        if (calculateHorizontalDistance(lastPt, resolved.point) < 0.05) {
+          this.onValidationErrorCallback?.('Move reticle at least 5 cm from the previous corner');
+          return false;
+        }
+      }
+
       this.floorPoints.push(resolved.point);
       this.state = 'MEASURING_FLOOR';
+      this.lastLiveDistance = 0;
       this.triggerHaptic(25);
       this.syncVisuals();
       this.notifyState();
@@ -333,6 +344,7 @@ export class RoomManager {
 
       this.ceilingPoint = position.clone();
       this.state = 'COMPLETED';
+      this.lastLiveDistance = 0;
       this.triggerHaptic([30, 40, 30]);
       this.syncVisuals();
       this.notifyState();
@@ -349,6 +361,7 @@ export class RoomManager {
     if (this.floorPoints.length < 3) return false;
     this.isFloorClosed = true;
     this.state = 'MEASURING_CEILING';
+    this.lastLiveDistance = 0;
     this.liveSnapState = {
       isSnappedToStart: false,
       isOrthoSnapped: false,
@@ -376,6 +389,7 @@ export class RoomManager {
    * Action: Undo last placed point
    */
   public undo(): void {
+    this.lastLiveDistance = 0;
     if (this.state === 'COMPLETED') {
       this.ceilingPoint = null;
       this.state = 'MEASURING_CEILING';
@@ -402,6 +416,7 @@ export class RoomManager {
     this.isFloorClosed = false;
     this.openings = [];
     this.state = 'SCAN_FLOOR';
+    this.lastLiveDistance = 0;
     this.liveSnapState = {
       isSnappedToStart: false,
       isOrthoSnapped: false,
@@ -434,6 +449,7 @@ export class RoomManager {
       );
 
       const currentSegment = calculateHorizontalDistance(last, resolved.point);
+      this.lastLiveDistance = currentSegment;
       this.notifyState(currentSegment);
     } else if (this.state === 'MEASURING_CEILING' && this.floorPoints.length > 0 && reticlePos) {
       this.liveSnapState = {
@@ -453,8 +469,10 @@ export class RoomManager {
         null
       );
 
+      this.lastLiveDistance = liveHeight;
       this.notifyState(liveHeight);
     } else {
+      this.lastLiveDistance = 0;
       this.liveSnapState = {
         isSnappedToStart: false,
         isOrthoSnapped: false,
@@ -474,7 +492,7 @@ export class RoomManager {
     );
   }
 
-  public getMetrics(liveDistance: number = 0): RoomMetrics {
+  public getMetrics(liveDistance: number = this.lastLiveDistance): RoomMetrics {
     const area = this.floorPoints.length >= 3 ? calculateShoelaceArea(this.floorPoints) : 0;
     const perimeter = calculatePerimeter(this.floorPoints, this.isFloorClosed);
     let height = 0;
@@ -502,6 +520,7 @@ export class RoomManager {
       volume,
       grossWallArea,
       openingsArea,
+      openingsCount: this.openings.length,
       netWallArea,
       isSnappedToStart: this.liveSnapState.isSnappedToStart,
       isOrthoSnapped: this.liveSnapState.isOrthoSnapped,
@@ -509,7 +528,7 @@ export class RoomManager {
     };
   }
 
-  private notifyState(liveDistance: number = 0): void {
+  private notifyState(liveDistance: number = this.lastLiveDistance): void {
     if (this.onStateChangeCallback) {
       this.onStateChangeCallback(this.getMetrics(liveDistance));
     }

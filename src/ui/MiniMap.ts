@@ -87,6 +87,10 @@ export class MiniMap {
     this.canvas.addEventListener('pointercancel', this.onCanvasPointerUp.bind(this));
   }
 
+  public isExpandedView(): boolean {
+    return this.isExpanded;
+  }
+
   public toggleExpand(): void {
     this.isExpanded = !this.isExpanded;
     this.draggingIndex = null;
