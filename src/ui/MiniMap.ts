@@ -91,6 +91,13 @@ export class MiniMap {
     return this.isExpanded;
   }
 
+  public setVisible(visible: boolean): void {
+    this.container.classList.toggle('hidden', !visible);
+    if (!visible && this.isExpanded) {
+      this.toggleExpand();
+    }
+  }
+
   public toggleExpand(): void {
     this.isExpanded = !this.isExpanded;
     this.draggingIndex = null;

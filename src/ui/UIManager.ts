@@ -42,6 +42,7 @@ export interface UIElements {
   btnSnapToggle: HTMLButtonElement;
   btnUnitToggle: HTMLButtonElement;
   btnOpenings: HTMLButtonElement;
+  btnSpikeToggle?: HTMLButtonElement | null;
   btnExport: HTMLButtonElement;
   exportModal: HTMLElement;
   modalCloseBtn: HTMLButtonElement;
@@ -67,6 +68,9 @@ export class UIManager {
   private onPinRequested: () => void;
   private onExitRequested: () => void;
   private onRestartSessionRequested: () => Promise<void> | void;
+  private onSpikeToggleRequested?: () => void;
+  private onBeforeCopy?: (targetId: string) => void;
+  private onLandingShown?: () => void;
   private btnOpenHelp: HTMLButtonElement | null;
   private helpModal: HTMLDialogElement | null;
   private helpCloseBtn: HTMLButtonElement | null;
@@ -78,6 +82,9 @@ export class UIManager {
       onPinRequested: () => void;
       onExitRequested: () => void;
       onRestartSessionRequested: () => Promise<void> | void;
+      onSpikeToggleRequested?: () => void;
+      onBeforeCopy?: (targetId: string) => void;
+      onLandingShown?: () => void;
     }
   ) {
     this.els = els;
@@ -85,6 +92,9 @@ export class UIManager {
     this.onPinRequested = callbacks.onPinRequested;
     this.onExitRequested = callbacks.onExitRequested;
     this.onRestartSessionRequested = callbacks.onRestartSessionRequested;
+    this.onSpikeToggleRequested = callbacks.onSpikeToggleRequested;
+    this.onBeforeCopy = callbacks.onBeforeCopy;
+    this.onLandingShown = callbacks.onLandingShown;
     this.btnOpenHelp =
       els.btnOpenHelp ?? (document.getElementById('btn-open-help') as HTMLButtonElement | null);
     this.helpModal =
@@ -251,6 +261,7 @@ export class UIManager {
       );
     } else {
       document.addEventListener('click', (event) => {
+        if (event.defaultPrevented) return;
         const targetEl = event.target as HTMLElement | null;
         const button = targetEl?.closest<HTMLButtonElement>('button[command^="--copy"]');
         if (!button) return;
@@ -264,6 +275,7 @@ export class UIManager {
   }
 
   private legacyCopy(text: string): boolean {
+    const previousFocus = document.activeElement as HTMLElement | null;
     const field = Object.assign(document.createElement('textarea'), { value: text });
     field.setAttribute('readonly', '');
     field.style.cssText = 'position:fixed;inset-block-start:0;opacity:0';
@@ -273,12 +285,15 @@ export class UIManager {
       return document.execCommand('copy');
     } finally {
       field.remove();
+      previousFocus?.focus({ preventScroll: true });
     }
   }
 
   private async executeCopyCommand(button: HTMLElement, target: HTMLElement): Promise<void> {
     if (target.id === 'summary-report-pre') {
       target.textContent = this.roomManager.getFormattedSummaryText();
+    } else if (this.onBeforeCopy) {
+      this.onBeforeCopy(target.id);
     }
 
     const text =
@@ -442,6 +457,11 @@ export class UIManager {
       this.openExportModal('openings');
     });
 
+    this.els.btnSpikeToggle?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onSpikeToggleRequested?.();
+    });
+
     this.els.btnModalRestart.addEventListener('click', (e) => {
       e.stopPropagation();
       this.closeExportModal();
@@ -521,6 +541,14 @@ export class UIManager {
     this.els.landingScreen.classList.remove('hidden');
     this.closeExportModal();
     this.closeScreenshotModal();
+    this.onLandingShown?.();
+  }
+
+  public setSpikeUIMode(active: boolean): void {
+    this.els.hudBottom.classList.toggle('hidden', active);
+    this.els.instructionBanner.classList.toggle('hidden', active);
+    this.miniMap.setVisible(!active);
+    this.els.btnSpikeToggle?.setAttribute('aria-pressed', String(active));
   }
 
   public updateDepthDiagnostics(diag: DepthDiagnostics): void {
@@ -988,7 +1016,7 @@ export class UIManager {
     this.showToast('Photo saved to downloads!');
   }
 
-  private showToast(msg: string): void {
+  public showToast(msg: string): void {
     const toast = document.createElement('div');
     toast.className = 'toast';
     toast.textContent = msg;

@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { XRManager } from './xr/XRManager';
 import { UIManager, UIElements } from './ui/UIManager';
 import { SnapshotManager } from './ui/SnapshotManager';
+import { SpikeOverlayUI } from './spike/SpikeOverlayUI';
 
 let isRefreshing = false;
 
@@ -187,6 +188,7 @@ function initApp(): void {
     btnSnapToggle: document.getElementById('btn-snap-toggle') as HTMLButtonElement,
     btnUnitToggle: document.getElementById('btn-unit-toggle') as HTMLButtonElement,
     btnOpenings: document.getElementById('btn-openings') as HTMLButtonElement,
+    btnSpikeToggle: document.getElementById('btn-spike-toggle') as HTMLButtonElement | null,
     btnExport: document.getElementById('btn-export') as HTMLButtonElement,
     exportModal: document.getElementById('export-modal')!,
     modalCloseBtn: document.getElementById('modal-close-btn') as HTMLButtonElement,
@@ -200,8 +202,17 @@ function initApp(): void {
 
   const compatIndicator = document.getElementById('compat-indicator')!;
   const compatLabel = document.getElementById('compat-label')!;
+  const btnStartSpike = document.getElementById('btn-start-spike') as HTMLButtonElement | null;
+  const btnSpikeDepthPref = document.getElementById('btn-spike-depth-pref') as HTMLButtonElement | null;
 
   let uiManager: UIManager;
+  let spikeOverlayUI: SpikeOverlayUI;
+
+  const syncSpikeModeUI = () => {
+    const active = xrManager.isSpikeModeActive();
+    uiManager.setSpikeUIMode(active);
+    spikeOverlayUI.setVisible(active);
+  };
 
   // Initialize XR Manager
   const xrManager = new XRManager({
@@ -209,21 +220,28 @@ function initApp(): void {
     overlayElement,
     onSessionStarted: () => {
       uiManager.showAROverlay();
+      syncSpikeModeUI();
     },
     onSessionEnded: () => {
       uiManager.showLandingScreen();
+      spikeOverlayUI.setVisible(false);
     },
     onStatusMessage: (msg) => {
       console.log('[XR Status]', msg);
     },
     onRenderFrame: (reticlePos, camera) => {
-      if (uiManager) {
+      if (uiManager && !xrManager.isSpikeModeActive()) {
         uiManager.renderMiniMap(
           xrManager.getRoomManager().getFloorPoints(),
           xrManager.getRoomManager().isClosed(),
           reticlePos,
           camera
         );
+      }
+    },
+    onSpikeFrameUpdated: () => {
+      if (spikeOverlayUI && xrManager.isSpikeModeActive()) {
+        spikeOverlayUI.updateTelemetry();
       }
     },
     isInteractionBlocked: () => (uiManager ? uiManager.isInteractionBlocked() : false)
@@ -239,8 +257,64 @@ function initApp(): void {
     },
     onRestartSessionRequested: async () => {
       await xrManager.restartSession();
+      syncSpikeModeUI();
+    },
+    onSpikeToggleRequested: () => {
+      const next = !xrManager.isSpikeModeActive();
+      xrManager.setSpikeModeActive(next);
+      syncSpikeModeUI();
+      uiManager.showToast(next ? 'Phase 0 Spike mode enabled' : 'Returned to manual measurement');
+    },
+    onBeforeCopy: (targetId) => {
+      if (targetId === 'spike-report-pre') {
+        spikeOverlayUI.syncReportText();
+      } else if (targetId === 'landing-spike-report-pre') {
+        spikeOverlayUI.refreshLandingSavedCard();
+      }
+    },
+    onLandingShown: () => {
+      spikeOverlayUI.refreshLandingSavedCard();
     }
   });
+
+  spikeOverlayUI = new SpikeOverlayUI(
+    xrManager.getSensorSpikeProbe(),
+    xrManager.getSpikeVisuals(),
+    {
+      onExitSpikeMode: () => {
+        xrManager.setSpikeModeActive(false);
+        syncSpikeModeUI();
+        uiManager.showToast('Switched to manual measurement mode');
+      },
+      onSwitchDepthPreference: async (nextPref) => {
+        const prefLabel = nextPref === 'raw-first' ? 'Raw' : 'Smooth';
+        if (btnSpikeDepthPref) {
+          btnSpikeDepthPref.textContent = `Depth: ${prefLabel}`;
+        }
+        uiManager.showToast(`Switching depth request to ${prefLabel}-first...`);
+        try {
+          await xrManager.switchDepthPreferenceLive(nextPref);
+          syncSpikeModeUI();
+        } catch (err) {
+          uiManager.showToast(`Depth switch failed: ${(err as Error).message}`);
+        }
+      },
+      onToast: (msg) => {
+        uiManager.showToast(msg);
+      }
+    }
+  );
+
+  // Sync initial Depth preference button label on landing screen
+  if (btnSpikeDepthPref) {
+    btnSpikeDepthPref.textContent =
+      xrManager.getDepthPreference() === 'raw-first' ? 'Depth: Raw' : 'Depth: Smooth';
+    btnSpikeDepthPref.addEventListener('click', () => {
+      const next = xrManager.getDepthPreference() === 'raw-first' ? 'smooth-first' : 'raw-first';
+      xrManager.setDepthPreference(next);
+      btnSpikeDepthPref.textContent = next === 'raw-first' ? 'Depth: Raw' : 'Depth: Smooth';
+    });
+  }
 
   // Initialize Snapshot Manager for capturing 3D AR measurements inside active frames
   const snapshotManager = new SnapshotManager(xrManager.getRoomManager(), xrManager);
@@ -272,6 +346,7 @@ function initApp(): void {
   // Launch Handlers
   uiElements.btnStartAR.addEventListener('click', async () => {
     try {
+      xrManager.setSpikeModeActive(false);
       await xrManager.startARSession();
     } catch (err) {
       alert(`Could not start WebXR AR session: ${(err as Error).message}`);
@@ -279,6 +354,22 @@ function initApp(): void {
   });
 
   uiElements.btnStartSim.addEventListener('click', () => {
+    xrManager.setSpikeModeActive(false);
+    xrManager.startSimulatorSession();
+  });
+
+  btnStartSpike?.addEventListener('click', async () => {
+    xrManager.setSpikeModeActive(true);
+    const arSupported = await XRManager.isARSupported();
+    if (arSupported) {
+      try {
+        await xrManager.startARSession();
+        return;
+      } catch (err) {
+        console.warn('[Spike] AR launch failed, falling back to simulator:', err);
+        uiManager.showToast(`AR failed (${(err as Error).message}), opening Simulator`);
+      }
+    }
     xrManager.startSimulatorSession();
   });
 }

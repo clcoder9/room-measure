@@ -5,6 +5,8 @@ import { DepthExplorer } from './DepthExplorer';
 import { RoomManager } from '../measurement/RoomManager';
 import { MeasurementVisuals } from '../measurement/MeasurementVisuals';
 import { calculateAverageFloorHeight } from '../measurement/math';
+import { DepthPreference, SensorSpikeProbe } from '../spike/SensorSpikeProbe';
+import { SpikeVisuals } from '../spike/SpikeVisuals';
 
 export interface XRManagerOptions {
   container: HTMLElement;
@@ -13,6 +15,7 @@ export interface XRManagerOptions {
   onSessionEnded?: () => void;
   onStatusMessage?: (msg: string) => void;
   onRenderFrame?: (reticlePos: THREE.Vector3 | null, camera: THREE.Camera) => void;
+  onSpikeFrameUpdated?: () => void;
   isInteractionBlocked?: () => boolean;
 }
 
@@ -32,10 +35,15 @@ export class XRManager {
   private visuals: MeasurementVisuals;
   private roomManager: RoomManager;
   private depthExplorer: DepthExplorer;
+  private sensorSpikeProbe: SensorSpikeProbe;
+  private spikeVisuals: SpikeVisuals;
 
   private xrSession: XRSession | null = null;
   private xrRefSpace: XRReferenceSpace | null = null;
   private xrHitTestSource: XRHitTestSource | null = null;
+  private depthPreference: DepthPreference = 'raw-first';
+  private spikeModeActive = false;
+  private suppressSessionEndCallback = false;
 
   private isSimulatedMode = false;
   private orbitControls: OrbitControls | null = null;
@@ -53,6 +61,7 @@ export class XRManager {
   private onSessionEnded?: () => void;
   private onStatusMessage?: (msg: string) => void;
   private onRenderFrame?: (reticlePos: THREE.Vector3 | null, camera: THREE.Camera) => void;
+  private onSpikeFrameUpdated?: () => void;
   private isInteractionBlocked?: () => boolean;
 
   constructor(options: XRManagerOptions) {
@@ -62,7 +71,17 @@ export class XRManager {
     this.onSessionEnded = options.onSessionEnded;
     this.onStatusMessage = options.onStatusMessage;
     this.onRenderFrame = options.onRenderFrame;
+    this.onSpikeFrameUpdated = options.onSpikeFrameUpdated;
     this.isInteractionBlocked = options.isInteractionBlocked;
+
+    try {
+      const savedPref = localStorage.getItem('spatialmeasure_depth_pref');
+      if (savedPref === 'raw-first' || savedPref === 'smooth-first') {
+        this.depthPreference = savedPref;
+      }
+    } catch {
+      // Ignore storage errors
+    }
 
     // Three.js Scene Setup
     this.scene = new THREE.Scene();
@@ -102,6 +121,9 @@ export class XRManager {
 
     this.roomManager = new RoomManager(this.visuals);
     this.depthExplorer = new DepthExplorer();
+    this.sensorSpikeProbe = new SensorSpikeProbe();
+    this.spikeVisuals = new SpikeVisuals();
+    this.scene.add(this.spikeVisuals);
 
     // Resize handling
     window.addEventListener('resize', this.onWindowResize.bind(this));
@@ -118,6 +140,74 @@ export class XRManager {
 
   public getDepthExplorer(): DepthExplorer {
     return this.depthExplorer;
+  }
+
+  public getSensorSpikeProbe(): SensorSpikeProbe {
+    return this.sensorSpikeProbe;
+  }
+
+  public getSpikeVisuals(): SpikeVisuals {
+    return this.spikeVisuals;
+  }
+
+  public isSpikeModeActive(): boolean {
+    return this.spikeModeActive;
+  }
+
+  public setSpikeModeActive(active: boolean): void {
+    this.spikeModeActive = active;
+    this.spikeVisuals.setActive(active, this.isSimulatedMode);
+    if (active && this.sensorSpikeProbe.getSessionInfo().mode === 'inactive') {
+      if (this.xrSession) {
+        this.sensorSpikeProbe.startSession({
+          mode: 'immersive-ar',
+          session: this.xrSession,
+          referenceSpaceType: 'local',
+          depthPreference: this.depthPreference,
+          negotiationAttempt: 1
+        });
+      } else if (this.isSimulatedMode) {
+        this.sensorSpikeProbe.startSession({
+          mode: 'desktop-simulator',
+          referenceSpaceType: 'local-floor',
+          depthPreference: this.depthPreference,
+          negotiationAttempt: 1
+        });
+      }
+    }
+  }
+
+  public getDepthPreference(): DepthPreference {
+    return this.depthPreference;
+  }
+
+  public setDepthPreference(pref: DepthPreference): void {
+    this.depthPreference = pref;
+    try {
+      localStorage.setItem('spatialmeasure_depth_pref', pref);
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  public async switchDepthPreferenceLive(pref: DepthPreference): Promise<void> {
+    this.setDepthPreference(pref);
+    if (this.xrSession) {
+      this.suppressSessionEndCallback = true;
+      try {
+        await this.xrSession.end();
+      } finally {
+        this.suppressSessionEndCallback = false;
+      }
+      await this.startARSession();
+    } else if (this.isSimulatedMode) {
+      this.sensorSpikeProbe.startSession({
+        mode: 'desktop-simulator',
+        referenceSpaceType: 'local-floor',
+        depthPreference: this.depthPreference,
+        negotiationAttempt: 1
+      });
+    }
   }
 
   public getRenderer(): THREE.WebGLRenderer {
@@ -236,30 +326,65 @@ export class XRManager {
     this.cleanupSimulatorArtifacts();
     this.renderer.xr.enabled = true;
 
+    const depthTypeRequest =
+      this.depthPreference === 'smooth-first' ? ['smooth', 'raw'] : ['raw', 'smooth'];
+
     const sessionInit: XRSessionInit = {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['local-floor', 'bounded-floor', 'dom-overlay', 'plane-detection', 'depth-sensing'],
+      optionalFeatures: [
+        'local-floor',
+        'bounded-floor',
+        'dom-overlay',
+        'plane-detection',
+        'mesh-detection',
+        'anchors',
+        'depth-sensing'
+      ],
       domOverlay: { root: this.overlayElement },
       depthSensing: {
-        usagePreference: ['cpu-optimized'],
-        dataFormatPreference: ['luminance-alpha', 'float32']
-      }
+        usagePreference: ['cpu-optimized', 'gpu-optimized'],
+        dataFormatPreference: ['float32', 'luminance-alpha'],
+        depthTypeRequest
+      } as unknown as XRDepthStateInit
     };
 
     try {
       this.notifyStatus('Requesting AR session...');
 
       let session: XRSession;
+      let negotiationAttempt = 1;
       try {
         session = await navigator.xr.requestSession('immersive-ar', sessionInit);
       } catch (err) {
-        console.warn('[WebXR] Failed with depth-sensing options, retrying with core AR features:', err);
-        const fallbackInit: XRSessionInit = {
-          requiredFeatures: ['hit-test'],
-          optionalFeatures: ['local-floor', 'dom-overlay', 'plane-detection'],
-          domOverlay: { root: this.overlayElement }
-        };
-        session = await navigator.xr.requestSession('immersive-ar', fallbackInit);
+        console.warn('[WebXR] Attempt 1 (depthTypeRequest) failed, retrying standard depthSensing:', err);
+        try {
+          negotiationAttempt = 2;
+          const fallbackDepthInit: XRSessionInit = {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: [
+              'local-floor',
+              'bounded-floor',
+              'dom-overlay',
+              'plane-detection',
+              'depth-sensing'
+            ],
+            domOverlay: { root: this.overlayElement },
+            depthSensing: {
+              usagePreference: ['cpu-optimized'],
+              dataFormatPreference: ['luminance-alpha', 'float32']
+            }
+          };
+          session = await navigator.xr.requestSession('immersive-ar', fallbackDepthInit);
+        } catch (err2) {
+          console.warn('[WebXR] Attempt 2 (depthSensing) failed, retrying core AR features:', err2);
+          negotiationAttempt = 3;
+          const coreInit: XRSessionInit = {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['local-floor', 'dom-overlay', 'plane-detection'],
+            domOverlay: { root: this.overlayElement }
+          };
+          session = await navigator.xr.requestSession('immersive-ar', coreInit);
+        }
       }
 
       this.xrSession = session;
@@ -292,6 +417,14 @@ export class XRManager {
       session.addEventListener('end', this.onXRSessionEnded.bind(this));
 
       this.depthExplorer.reset();
+      this.sensorSpikeProbe.startSession({
+        mode: 'immersive-ar',
+        session,
+        referenceSpaceType: chosenRefSpaceType,
+        depthPreference: this.depthPreference,
+        negotiationAttempt
+      });
+      this.spikeVisuals.setActive(this.spikeModeActive, false);
       this.notifyStatus('AR active. Point camera at floor.');
 
       if (this.onSessionStarted) {
@@ -312,8 +445,14 @@ export class XRManager {
     this.cleanupSimulatorArtifacts();
     this.isSimulatedMode = true;
     this.renderer.xr.enabled = false;
-    this.camera.position.set(0, 2.2, 3.8);
-    this.camera.lookAt(0, 0, 0);
+
+    if (this.spikeModeActive) {
+      this.camera.position.set(0.2, 1.55, 1.2);
+      this.camera.lookAt(0, 1.2, -1.8);
+    } else {
+      this.camera.position.set(0, 2.2, 3.8);
+      this.camera.lookAt(0, 0, 0);
+    }
 
     const grid = new THREE.GridHelper(12, 24, 0x00f2fe, 0x1e293b);
     grid.name = 'SimFloorGrid';
@@ -325,7 +464,15 @@ export class XRManager {
     this.orbitControls.maxPolarAngle = Math.PI / 2 - 0.02;
     this.orbitControls.minDistance = 0.8;
     this.orbitControls.maxDistance = 18;
-    this.orbitControls.target.set(0, 0, 0);
+    this.orbitControls.target.set(0, this.spikeModeActive ? 1.2 : 0, this.spikeModeActive ? -1.8 : 0);
+
+    this.sensorSpikeProbe.startSession({
+      mode: 'desktop-simulator',
+      referenceSpaceType: 'local-floor',
+      depthPreference: this.depthPreference,
+      negotiationAttempt: 1
+    });
+    this.spikeVisuals.setActive(this.spikeModeActive, true);
 
     this.notifyStatus('Simulator active. Left-click to pin, drag to orbit.');
 
@@ -430,12 +577,18 @@ export class XRManager {
       const avgFloorY = calculateAverageFloorHeight(floorPoints);
 
       let resolvedReticle = false;
+      let rawHitWorldPos: THREE.Vector3 | null = null;
 
       if (hitTestResults.length > 0) {
         const hit = hitTestResults[0];
         const pose = hit.getPose(this.xrRefSpace);
 
         if (pose) {
+          rawHitWorldPos = new THREE.Vector3(
+            pose.transform.position.x,
+            pose.transform.position.y,
+            pose.transform.position.z
+          );
           const hitY = pose.transform.position.y;
           // In ceiling mode, only accept real AR hits that are clearly above the floor plane
           if (!isCeilingMode || Math.abs(hitY - avgFloorY) > 0.35) {
@@ -486,6 +639,29 @@ export class XRManager {
 
       // Secondary: Probe WebXR Depth API on Pixel Pro hardware
       this.depthExplorer.probeFrame(frame, this.xrRefSpace, timestamp);
+
+      if (this.spikeModeActive) {
+        const camWorldPos = new THREE.Vector3();
+        const camForward = new THREE.Vector3();
+        const xrCam = this.renderer.xr.getCamera();
+        xrCam.getWorldPosition(camWorldPos);
+        xrCam.getWorldDirection(camForward);
+
+        const refreshed = this.sensorSpikeProbe.sampleARFrame({
+          frame,
+          refSpace: this.xrRefSpace,
+          timestamp,
+          hitWorldPos: rawHitWorldPos,
+          cameraWorldPos: camWorldPos,
+          cameraForward: camForward
+        });
+        if (refreshed) {
+          const cloud = this.sensorSpikeProbe.getWorldPointCloud();
+          this.spikeVisuals.updatePointCloud(cloud.positions, cloud.colors, cloud.count);
+          this.spikeVisuals.updateDetectedPlanes(this.sensorSpikeProbe.getPlaneVisuals());
+          this.onSpikeFrameUpdated?.();
+        }
+      }
     }
 
     this.renderer.render(this.scene, this.camera);
@@ -525,6 +701,20 @@ export class XRManager {
       }
     }
 
+    if (this.spikeModeActive) {
+      const refreshed = this.sensorSpikeProbe.sampleSimulatorFrame({
+        camera: this.camera,
+        meshes: this.spikeVisuals.getSimulatorRoomMeshes(),
+        timestamp: now,
+        hitWorldPos: this.reticle.visible ? this.reticle.position.clone() : null
+      });
+      if (refreshed) {
+        const cloud = this.sensorSpikeProbe.getWorldPointCloud();
+        this.spikeVisuals.updatePointCloud(cloud.positions, cloud.colors, cloud.count);
+        this.onSpikeFrameUpdated?.();
+      }
+    }
+
     if (this.onRenderFrame) {
       const retPos = this.reticle.visible ? this.reticle.position.clone() : null;
       this.onRenderFrame(retPos, this.camera);
@@ -538,6 +728,7 @@ export class XRManager {
    * Triggered when user taps the screen in WebXR
    */
   private onXRSelect(): void {
+    if (this.spikeModeActive) return;
     if (this.isInteractionBlocked?.()) return;
     if (this.reticle.visible) {
       const pos = this.reticle.getWorldPositionTarget();
@@ -564,10 +755,11 @@ export class XRManager {
     this.xrRefSpace = null;
     this.reticle.visible = false;
     this.reticle.setSnapped(false);
+    this.spikeVisuals.setActive(false, false);
     this.renderer.setAnimationLoop(null);
     this.notifyStatus('AR session ended.');
 
-    if (this.onSessionEnded) {
+    if (this.onSessionEnded && !this.suppressSessionEndCallback) {
       this.onSessionEnded();
     }
   }
@@ -581,6 +773,7 @@ export class XRManager {
       this.cleanupSimulatorArtifacts();
       this.reticle.visible = false;
       this.reticle.setSnapped(false);
+      this.spikeVisuals.setActive(false, false);
       if (this.onSessionEnded) {
         this.onSessionEnded();
       }
@@ -637,6 +830,22 @@ export class XRManager {
     this.raycaster.setFromCamera(ndc, this.camera);
     const target = new THREE.Vector3();
 
+    if (this.spikeModeActive) {
+      const hits = this.raycaster.intersectObjects(this.spikeVisuals.getSimulatorRoomMeshes(), false);
+      if (hits.length > 0) {
+        const hit = hits[0];
+        let normal: THREE.Vector3 | undefined;
+        if (hit.face) {
+          normal = hit.face.normal
+            .clone()
+            .transformDirection(hit.object.matrixWorld)
+            .normalize();
+        }
+        this.reticle.setWorldPose(hit.point, normal);
+        return;
+      }
+    }
+
     if (this.roomManager.getState() === 'MEASURING_CEILING') {
       const floorPoints = this.roomManager.getFloorPoints();
       const avgFloorY = calculateAverageFloorHeight(floorPoints);
@@ -684,6 +893,7 @@ export class XRManager {
 
   private onPointerUpSim(e: PointerEvent): void {
     if (!this.isSimulatedMode) return;
+    if (this.spikeModeActive) return;
     if (this.isInteractionBlocked?.()) return;
     if (e.button !== 0 || this.simPointerDownPos.button !== 0) return;
 

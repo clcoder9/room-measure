@@ -115,11 +115,46 @@
             <span class="btn-icon" aria-hidden="true">🖥️</span>
             <span>Launch 3D Simulator (Desktop)</span>
           </button>
+          <div class="spike-launch-row">
+            <button type="button" id="btn-start-spike" class="btn btn-spike-launch">
+              <span class="btn-icon" aria-hidden="true">🔬</span>
+              <span>Phase 0: Sensor &amp; Depth Spike</span>
+            </button>
+            <button type="button" id="btn-spike-depth-pref" class="btn-spike-pref" title="Toggle WebXR depthTypeRequest preference">
+              Depth: Raw
+            </button>
+          </div>
           <button type="button" id="btn-open-help" class="btn btn-ghost-help">
             <span class="btn-icon" aria-hidden="true">❓</span>
             <span>How to Use &amp; Measurement Guide</span>
           </button>
         </div>
+
+        <section id="landing-spike-saved-card" class="landing-spike-card hidden" aria-label="Saved Phase 0 Spike Report">
+          <div class="landing-spike-header">
+            <span class="modal-section-title">🔬 Last Phase 0 Spike Report</span>
+            <span id="landing-spike-summary" class="landing-spike-summary">--</span>
+          </div>
+          <div class="landing-spike-actions">
+            <span class="copy">
+              <button
+                type="button"
+                id="btn-landing-spike-copy"
+                class="btn-mini copy-button"
+                command="--copy"
+                commandfor="landing-spike-report-pre"
+                aria-label="Copy saved Spike JSON report"
+              >
+                <span class="copy-icon" aria-hidden="true">📋</span>
+                <span id="landing-spike-copy-label">Copy Spike JSON</span>
+              </button>
+              <span class="tip" role="status"></span>
+            </span>
+            <button type="button" id="btn-landing-spike-download" class="btn-mini">💾 Save JSON</button>
+            <button type="button" id="btn-landing-spike-clear" class="btn-mini btn-mini-danger">🗑️ Clear</button>
+          </div>
+          <pre id="landing-spike-report-pre" class="sr-only"></pre>
+        </section>
 
         <div class="footer-note">
           Supports WebXR <code>hit-test</code>, <code>dom-overlay</code> &amp; <code>depth-sensing</code>.
@@ -207,6 +242,86 @@
 
       <!-- Center Crosshair Reticle Guide -->
       <div class="crosshair-guide" aria-hidden="true"></div>
+      <!-- Phase 0 Spike ROI Guide Box (matches [0.42, 0.58]^2 normalized ROI) -->
+      <div id="spike-roi-guide" class="spike-roi-guide hidden" aria-hidden="true"></div>
+
+      <!-- Phase 0 Sensor & Depth Spike Floating Diagnostic HUD -->
+      <section id="spike-panel" class="spike-panel hidden" aria-label="Phase 0 Sensor and Depth Spike">
+        <div class="spike-panel-header">
+          <div class="spike-header-left">
+            <span id="spike-mode-pill" class="spike-mode-pill live">AR LIVE</span>
+            <span id="spike-stream-badge" class="badge badge-muted">Waiting...</span>
+          </div>
+          <div class="spike-header-actions">
+            <button type="button" id="btn-spike-pts" class="btn-mini" aria-pressed="true" title="Toggle 3D depth point cloud">Pts</button>
+            <button type="button" id="btn-spike-depth-mode" class="btn-mini" title="Switch depthTypeRequest (restarts XR session)">Raw</button>
+            <button type="button" id="btn-spike-minimize" class="btn-mini" aria-label="Minimize spike diagnostics">▾</button>
+            <button type="button" id="btn-spike-exit" class="btn-mini btn-mini-danger" title="Return to manual measurement mode">✕ Manual</button>
+          </div>
+        </div>
+
+        <div class="spike-panel-body">
+          <div class="spike-telemetry-row">
+            <div class="spike-heatmap-wrap">
+              <canvas id="spike-heatmap-canvas" class="spike-heatmap-canvas" width="64" height="48"></canvas>
+              <div class="spike-heatmap-legend">
+                <span class="legend-near">0.3m</span>
+                <span class="legend-hole">hole</span>
+                <span class="legend-far">4.5m</span>
+              </div>
+            </div>
+
+            <div class="spike-metrics-grid">
+              <div class="spike-metric-cell">
+                <span class="spike-metric-lbl">Center / Hit Δ</span>
+                <span id="spike-val-center" class="spike-metric-val">--</span>
+              </div>
+              <div class="spike-metric-cell">
+                <span class="spike-metric-lbl">Plane RMS / Jitter</span>
+                <span id="spike-val-rms" class="spike-metric-val">--</span>
+              </div>
+              <div class="spike-metric-cell">
+                <span class="spike-metric-lbl">ROI / Frame Valid</span>
+                <span id="spike-val-valid" class="spike-metric-val">--</span>
+              </div>
+              <div class="spike-metric-cell">
+                <span class="spike-metric-lbl">Surface Fit</span>
+                <span id="spike-val-surface" class="spike-metric-val">--</span>
+              </div>
+              <div class="spike-metric-cell">
+                <span class="spike-metric-lbl">Planes / Meshes</span>
+                <span id="spike-val-planes" class="spike-metric-val">--</span>
+              </div>
+              <div class="spike-metric-cell">
+                <span class="spike-metric-lbl">Depth Type / Mode</span>
+                <span id="spike-val-features" class="spike-metric-val">--</span>
+              </div>
+            </div>
+          </div>
+
+          <div id="spike-chips-row" class="spike-chips-row" aria-label="Capture benchmark sample"></div>
+
+          <div class="spike-actions-row">
+            <span class="copy">
+              <button
+                type="button"
+                id="btn-spike-copy"
+                class="btn-mini copy-button"
+                command="--copy"
+                commandfor="spike-report-pre"
+                aria-label="Copy Spike JSON report"
+              >
+                <span class="copy-icon" aria-hidden="true">📋</span>
+                <span id="spike-copy-label">Copy JSON (0)</span>
+              </button>
+              <span class="tip" role="status"></span>
+            </span>
+            <button type="button" id="btn-spike-download" class="btn-mini">💾 Save JSON</button>
+            <button type="button" id="btn-spike-clear" class="btn-mini btn-mini-danger">🗑️ Clear</button>
+          </div>
+          <pre id="spike-report-pre" class="sr-only"></pre>
+        </div>
+      </section>
 
       <!-- Instruction Banner -->
       <div class="instruction-banner">
@@ -279,6 +394,10 @@
             <button type="button" id="btn-openings" class="btn-toolbar" title="Add doors and windows">
               <span aria-hidden="true">🚪</span>
               <span>Openings</span>
+            </button>
+            <button type="button" id="btn-spike-toggle" class="btn-toolbar" aria-pressed="false" title="Toggle Phase 0 Sensor & Depth Spike">
+              <span aria-hidden="true">🔬</span>
+              <span>Spike</span>
             </button>
             <button type="button" id="btn-export" class="btn-toolbar" title="Export summary and saved rooms">
               <span aria-hidden="true">📄</span>

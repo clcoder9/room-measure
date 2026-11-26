@@ -1256,3 +1256,265 @@ dialog::backdrop {
   object-fit: contain;
   background: #000;
 }
+
+/* ============================================================
+   PHASE 0: SENSOR & DEPTH SPIKE UI
+   ============================================================ */
+.spike-launch-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.btn-spike-launch {
+  flex: 1 1 auto;
+  background: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.45);
+}
+
+.btn-spike-launch:active {
+  background: rgba(16, 185, 129, 0.28);
+  transform: scale(0.98);
+}
+
+.btn-spike-pref {
+  flex: 0 0 auto;
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-elevated);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  color: var(--accent-cyan);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.landing-spike-card {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.landing-spike-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.landing-spike-summary {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.landing-spike-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.landing-spike-actions .copy {
+  flex: 0 1 auto;
+}
+
+.spike-roi-guide {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 16vmin;
+  height: 16vmin;
+  transform: translate(-50%, -50%);
+  border: 1.5px dashed rgba(52, 211, 153, 0.7);
+  border-radius: 6px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(9, 13, 22, 0.45);
+}
+
+.spike-panel {
+  background: var(--bg-surface);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  border-radius: var(--radius-lg);
+  padding: 0.7rem;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: auto;
+  max-height: 62dvh;
+}
+
+.spike-panel.minimized .spike-panel-body {
+  display: none;
+}
+
+.spike-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.spike-header-left,
+.spike-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.spike-mode-pill {
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.spike-mode-pill.live {
+  background: rgba(16, 185, 129, 0.24);
+  border: 1px solid var(--accent-green);
+  color: #34d399;
+}
+
+.spike-mode-pill.sim {
+  background: rgba(245, 158, 11, 0.24);
+  border: 1px solid var(--accent-amber);
+  color: #fbbf24;
+}
+
+.spike-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow-y: auto;
+}
+
+.spike-telemetry-row {
+  display: flex;
+  gap: 0.55rem;
+  align-items: stretch;
+}
+
+.spike-heatmap-wrap {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.spike-heatmap-canvas {
+  width: 96px;
+  height: 72px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: #0f172a;
+  image-rendering: pixelated;
+  display: block;
+}
+
+.spike-heatmap-legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.6rem;
+  font-weight: 700;
+}
+
+.legend-near {
+  color: #fb923c;
+}
+
+.legend-hole {
+  color: #ec4899;
+}
+
+.legend-far {
+  color: #60a5fa;
+}
+
+.spike-metrics-grid {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.3rem 0.45rem;
+  background: rgba(0, 0, 0, 0.38);
+  border-radius: var(--radius-md);
+  padding: 0.4rem 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.spike-metric-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.spike-metric-lbl {
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.spike-metric-val {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spike-metric-val.good {
+  color: #34d399;
+}
+
+.spike-metric-val.warn {
+  color: #fbbf24;
+}
+
+.spike-metric-val.bad {
+  color: #f87171;
+}
+
+.spike-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.spike-chip.has-samples {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: var(--accent-green);
+  color: #6ee7b7;
+}
+
+.spike-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.spike-actions-row .copy {
+  flex: 1 1 120px;
+}
+
+.btn-mini[aria-pressed="true"] {
+  background: rgba(0, 242, 254, 0.22);
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
