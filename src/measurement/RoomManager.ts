@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { FurnitureBox, WallOpening } from '../scan/ScanTypes';
+import type { FurnitureBox, SurfaceTextureEntry, WallOpening } from '../scan/ScanTypes';
 import {
   UnitSystem,
   calculateHorizontalDistance,
@@ -16,7 +16,7 @@ import {
 } from './math';
 import { MeasurementVisuals } from './MeasurementVisuals';
 
-export type { FurnitureBox, WallOpening } from '../scan/ScanTypes';
+export type { FurnitureBox, SurfaceTextureEntry, SurfaceTextureMode, WallOpening } from '../scan/ScanTypes';
 
 export type MeasurementState =
   | 'SCAN_FLOOR'
@@ -96,6 +96,7 @@ export interface RoomExportData {
   ceilingCoordinate: { x: number; y: number; z: number } | null;
   openings: WallOpening[];
   furniture: FurnitureBox[];
+  surfaceTextures?: SurfaceTextureEntry[];
 }
 
 export interface SavedRoomRecord {
@@ -128,6 +129,9 @@ export class RoomManager {
   private isFloorClosed: boolean = false;
   private openings: WallOpening[] = [];
   private furniture: FurnitureBox[] = [];
+  private surfaceTextures = new Map<string, SurfaceTextureEntry>();
+  private cachedFurnitureFootprintArea = 0;
+  private furnitureFootprintDirty = true;
   private openingMarkState: OpeningMarkState = {
     active: false,
     type: 'door',
@@ -303,6 +307,7 @@ export class RoomManager {
       heightMeters: Math.max(0.15, box.heightMeters)
     };
     this.furniture.push(item);
+    this.furnitureFootprintDirty = true;
     this.syncVisuals();
     this.notifyState();
     return item;
@@ -320,6 +325,7 @@ export class RoomManager {
       depthMeters: Math.max(0.15, patch.depthMeters ?? prev.depthMeters),
       heightMeters: Math.max(0.15, patch.heightMeters ?? prev.heightMeters)
     };
+    this.furnitureFootprintDirty = true;
     this.syncVisuals();
     this.notifyState();
   }
@@ -329,12 +335,41 @@ export class RoomManager {
     if (!item) return;
     item.yawRad = item.yawRad + Math.PI * 0.5;
     item.source = 'manual';
+    this.furnitureFootprintDirty = true;
     this.syncVisuals();
     this.notifyState();
   }
 
   public removeFurniture(id: string): void {
     this.furniture = this.furniture.filter((f) => f.id !== id);
+    this.surfaceTextures.delete(`furniture:${id}`);
+    this.furnitureFootprintDirty = true;
+    this.syncVisuals();
+    this.notifyState();
+  }
+
+  public getSurfaceTextures(): SurfaceTextureEntry[] {
+    return Array.from(this.surfaceTextures.values()).map((t) => ({ ...t }));
+  }
+
+  public getSurfaceTexture(surfaceKey: string): SurfaceTextureEntry | undefined {
+    const found = this.surfaceTextures.get(surfaceKey);
+    return found ? { ...found } : undefined;
+  }
+
+  public setSurfaceTexture(entry: SurfaceTextureEntry): void {
+    this.surfaceTextures.set(entry.surfaceKey, {
+      surfaceKey: entry.surfaceKey,
+      dataUrl: entry.dataUrl,
+      mode: entry.mode,
+      tileSizeMeters: Math.max(0.1, entry.tileSizeMeters || 1.0)
+    });
+    this.syncVisuals();
+    this.notifyState();
+  }
+
+  public removeSurfaceTexture(surfaceKey: string): void {
+    if (!this.surfaceTextures.delete(surfaceKey)) return;
     this.syncVisuals();
     this.notifyState();
   }
@@ -609,6 +644,7 @@ export class RoomManager {
 
       this.floorPoints.push(resolved.point);
       this.state = 'MEASURING_FLOOR';
+      this.furnitureFootprintDirty = true;
       this.lastLiveDistance = 0;
       this.triggerHaptic(25);
       this.syncVisuals();
@@ -644,6 +680,7 @@ export class RoomManager {
     if (this.floorPoints.length < 3) return false;
     this.isFloorClosed = true;
     this.state = 'MEASURING_CEILING';
+    this.furnitureFootprintDirty = true;
     this.lastLiveDistance = 0;
     this.liveSnapState = {
       isSnappedToStart: false,
@@ -664,6 +701,7 @@ export class RoomManager {
     if (index < 0 || index >= this.floorPoints.length) return;
     this.floorPoints[index].x = newX;
     this.floorPoints[index].z = newZ;
+    this.furnitureFootprintDirty = true;
 
     // Clamp positioned openings on affected wall segments
     if (this.isFloorClosed && this.floorPoints.length >= 3) {
@@ -710,6 +748,8 @@ export class RoomManager {
       centerXZ: [f.centerXZ[0], f.centerXZ[1]]
     }));
     this.openings = openings.map((o) => ({ ...o }));
+    this.surfaceTextures.clear();
+    this.furnitureFootprintDirty = true;
     this.openingMarkState = {
       active: false,
       type: 'door',
@@ -770,6 +810,7 @@ export class RoomManager {
       this.state = 'MEASURING_FLOOR';
     } else if (this.state === 'MEASURING_FLOOR') {
       this.floorPoints.pop();
+      this.furnitureFootprintDirty = true;
       if (this.floorPoints.length === 0) {
         this.state = 'SCAN_FLOOR';
       }
@@ -788,6 +829,9 @@ export class RoomManager {
     this.isFloorClosed = false;
     this.openings = [];
     this.furniture = [];
+    this.surfaceTextures.clear();
+    this.cachedFurnitureFootprintArea = 0;
+    this.furnitureFootprintDirty = true;
     this.openingMarkState = {
       active: false,
       type: 'door',
@@ -874,7 +918,8 @@ export class RoomManager {
       this.isFloorClosed,
       this.unitSystem,
       this.furniture,
-      this.openings
+      this.openings,
+      this.getSurfaceTextures()
     );
     this.visuals.updateOpeningMarkPreview(
       this.floorPoints,
@@ -944,7 +989,11 @@ export class RoomManager {
 
   public getMetrics(liveDistance: number = this.lastLiveDistance): RoomMetrics {
     const area = this.floorPoints.length >= 3 ? calculateShoelaceArea(this.floorPoints) : 0;
-    const furnitureFootprintArea = this.calculateFurnitureFootprintArea(area);
+    if (this.furnitureFootprintDirty) {
+      this.cachedFurnitureFootprintArea = this.calculateFurnitureFootprintArea(area);
+      this.furnitureFootprintDirty = false;
+    }
+    const furnitureFootprintArea = Math.min(area, this.cachedFurnitureFootprintArea);
     const freeFloorArea = Math.max(0, Math.round((area - furnitureFootprintArea) * 100) / 100);
     const perimeter = calculatePerimeter(this.floorPoints, this.isFloorClosed);
     let height = 0;
@@ -1043,8 +1092,165 @@ export class RoomManager {
           }
         : null,
       openings: this.getOpenings(),
-      furniture: this.getFurniture()
+      furniture: this.getFurniture(),
+      surfaceTextures: this.getSurfaceTextures()
     };
+  }
+
+  public importFromJSON(raw: unknown): { ok: boolean; error?: string; roomName?: string } {
+    if (!raw || typeof raw !== 'object') {
+      return { ok: false, error: 'Invalid JSON structure' };
+    }
+    const obj = raw as Record<string, unknown>;
+    const rawCoords = obj.floorCoordinates;
+    if (!Array.isArray(rawCoords) || rawCoords.length < 1) {
+      return { ok: false, error: 'JSON has no floorCoordinates' };
+    }
+
+    const parsedFloor: THREE.Vector3[] = [];
+    for (const pt of rawCoords) {
+      if (!pt || typeof pt !== 'object') {
+        return { ok: false, error: 'Invalid floor coordinate entry' };
+      }
+      const p = pt as Record<string, unknown>;
+      if (
+        typeof p.x !== 'number' || !Number.isFinite(p.x) ||
+        typeof p.y !== 'number' || !Number.isFinite(p.y) ||
+        typeof p.z !== 'number' || !Number.isFinite(p.z)
+      ) {
+        return { ok: false, error: 'Non-numeric floor coordinates in JSON' };
+      }
+      parsedFloor.push(new THREE.Vector3(p.x, p.y, p.z));
+    }
+
+    let parsedCeiling: THREE.Vector3 | null = null;
+    if (obj.ceilingCoordinate && typeof obj.ceilingCoordinate === 'object') {
+      const c = obj.ceilingCoordinate as Record<string, unknown>;
+      if (
+        typeof c.x === 'number' && Number.isFinite(c.x) &&
+        typeof c.y === 'number' && Number.isFinite(c.y) &&
+        typeof c.z === 'number' && Number.isFinite(c.z)
+      ) {
+        parsedCeiling = new THREE.Vector3(c.x, c.y, c.z);
+      }
+    }
+
+    const parsedOpenings: WallOpening[] = [];
+    if (Array.isArray(obj.openings)) {
+      for (let i = 0; i < obj.openings.length; i++) {
+        const o = obj.openings[i] as Record<string, unknown> | null;
+        if (!o || typeof o !== 'object') continue;
+        const type = o.type === 'window' ? 'window' : o.type === 'door' ? 'door' : null;
+        const w = typeof o.widthMeters === 'number' && Number.isFinite(o.widthMeters) ? o.widthMeters : 0;
+        const h = typeof o.heightMeters === 'number' && Number.isFinite(o.heightMeters) ? o.heightMeters : 0;
+        if (!type || w <= 0 || h <= 0) continue;
+        parsedOpenings.push({
+          id: typeof o.id === 'string' && o.id ? o.id : `imp-op-${i + 1}`,
+          type,
+          label: typeof o.label === 'string' && o.label ? o.label : (type === 'door' ? 'Door' : 'Window'),
+          widthMeters: Math.max(0.1, w),
+          heightMeters: Math.max(0.1, h),
+          wallIndex: typeof o.wallIndex === 'number' && Number.isInteger(o.wallIndex) ? o.wallIndex : undefined,
+          offsetAlongWallMeters:
+            typeof o.offsetAlongWallMeters === 'number' && Number.isFinite(o.offsetAlongWallMeters)
+              ? o.offsetAlongWallMeters
+              : undefined,
+          sillHeightMeters:
+            typeof o.sillHeightMeters === 'number' && Number.isFinite(o.sillHeightMeters)
+              ? o.sillHeightMeters
+              : undefined,
+          source: o.source === 'auto' ? 'auto' : 'manual',
+          confidence: typeof o.confidence === 'number' && Number.isFinite(o.confidence) ? o.confidence : undefined
+        });
+      }
+    }
+
+    const parsedFurniture: FurnitureBox[] = [];
+    if (Array.isArray(obj.furniture)) {
+      for (let i = 0; i < obj.furniture.length; i++) {
+        const f = obj.furniture[i] as Record<string, unknown> | null;
+        if (!f || typeof f !== 'object') continue;
+        const center = Array.isArray(f.centerXZ) ? f.centerXZ : null;
+        const w = typeof f.widthMeters === 'number' && Number.isFinite(f.widthMeters) ? f.widthMeters : 0;
+        const d = typeof f.depthMeters === 'number' && Number.isFinite(f.depthMeters) ? f.depthMeters : 0;
+        const h = typeof f.heightMeters === 'number' && Number.isFinite(f.heightMeters) ? f.heightMeters : 0;
+        if (
+          !center || center.length < 2 ||
+          typeof center[0] !== 'number' || !Number.isFinite(center[0]) ||
+          typeof center[1] !== 'number' || !Number.isFinite(center[1]) ||
+          w <= 0 || d <= 0 || h <= 0
+        ) {
+          continue;
+        }
+        parsedFurniture.push({
+          id: typeof f.id === 'string' && f.id ? f.id : `imp-furn-${i + 1}`,
+          label: typeof f.label === 'string' && f.label ? f.label : 'Furniture',
+          centerXZ: [center[0], center[1]],
+          widthMeters: Math.max(0.15, w),
+          depthMeters: Math.max(0.15, d),
+          heightMeters: Math.max(0.15, h),
+          floorY: typeof f.floorY === 'number' && Number.isFinite(f.floorY) ? f.floorY : parsedFloor[0].y,
+          yawRad: typeof f.yawRad === 'number' && Number.isFinite(f.yawRad) ? f.yawRad : 0,
+          source: f.source === 'auto' ? 'auto' : 'manual',
+          confidence: typeof f.confidence === 'number' && Number.isFinite(f.confidence) ? f.confidence : undefined
+        });
+      }
+    }
+
+    this.surfaceTextures.clear();
+    if (Array.isArray(obj.surfaceTextures)) {
+      for (const t of obj.surfaceTextures) {
+        if (!t || typeof t !== 'object') continue;
+        const entry = t as Record<string, unknown>;
+        if (
+          typeof entry.surfaceKey === 'string' &&
+          typeof entry.dataUrl === 'string' &&
+          entry.dataUrl.startsWith('data:image/')
+        ) {
+          this.surfaceTextures.set(entry.surfaceKey, {
+            surfaceKey: entry.surfaceKey,
+            dataUrl: entry.dataUrl,
+            mode: entry.mode === 'stretch' ? 'stretch' : 'tile',
+            tileSizeMeters:
+              typeof entry.tileSizeMeters === 'number' && Number.isFinite(entry.tileSizeMeters)
+                ? Math.max(0.1, entry.tileSizeMeters)
+                : 1.0
+          });
+        }
+      }
+    }
+
+    if (obj.unitSystem === 'imperial' || obj.unitSystem === 'metric') {
+      this.unitSystem = obj.unitSystem;
+    }
+
+    this.floorPoints = parsedFloor;
+    this.ceilingPoint = parsedCeiling;
+    this.openings = parsedOpenings;
+    this.furniture = parsedFurniture;
+    this.openingMarkState = { active: false, type: 'door', firstHit: null, liveHit: null };
+    this.lastLiveDistance = 0;
+    this.furnitureFootprintDirty = true;
+
+    if (this.ceilingPoint && this.floorPoints.length >= 3) {
+      this.isFloorClosed = true;
+      this.state = 'COMPLETED';
+    } else if (this.floorPoints.length >= 3) {
+      this.isFloorClosed = true;
+      this.state = 'MEASURING_CEILING';
+    } else if (this.floorPoints.length >= 1) {
+      this.isFloorClosed = false;
+      this.state = 'MEASURING_FLOOR';
+    } else {
+      this.isFloorClosed = false;
+      this.state = 'SCAN_FLOOR';
+    }
+
+    this.syncVisuals();
+    this.notifyState();
+
+    const roomName = typeof obj.name === 'string' && obj.name.trim() ? obj.name.trim() : undefined;
+    return { ok: true, roomName };
   }
 
   public getFormattedSummaryText(): string {
@@ -1360,6 +1566,8 @@ export class RoomManager {
     this.furniture = Array.isArray(found.furniture)
       ? found.furniture.map((f) => ({ ...f, centerXZ: [f.centerXZ[0], f.centerXZ[1]] }))
       : [];
+    this.surfaceTextures.clear();
+    this.furnitureFootprintDirty = true;
     this.openingMarkState = {
       active: false,
       type: 'door',

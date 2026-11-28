@@ -83,12 +83,22 @@ export interface DepthFramePayload {
   planes: SerializedPlaneInput[];
 }
 
+export type SurfaceTextureMode = 'stretch' | 'tile';
+
+export interface SurfaceTextureEntry {
+  surfaceKey: string; // 'floor' | 'ceiling' | 'wall:0' | ... | 'furniture:<id>'
+  dataUrl: string;
+  mode: SurfaceTextureMode;
+  tileSizeMeters: number;
+}
+
 export type WorkerInMessage =
-  | { type: 'INGEST_FRAME'; payload: DepthFramePayload }
-  | { type: 'RESET' };
+  | { type: 'INGEST_FRAME'; scanId: number; payload: DepthFramePayload }
+  | { type: 'RESET'; scanId: number };
 
 export type WorkerOutMessage = {
   type: 'SCAN_UPDATE';
+  scanId: number;
   shell: ShellEstimate;
   stats: ScanStats;
   furniture: FurnitureBox[];

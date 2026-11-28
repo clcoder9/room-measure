@@ -24,6 +24,7 @@ export class MiniMap {
   private headerTitleEl: HTMLElement;
   private toggleBtn: HTMLButtonElement;
   private isExpanded = false;
+  private isAutoScanMode = false;
 
   private lastFloorPoints: THREE.Vector3[] = [];
   private lastFurniture: FurnitureBox[] = [];
@@ -92,6 +93,12 @@ export class MiniMap {
     this.canvas.addEventListener('pointermove', this.onCanvasPointerMove.bind(this));
     this.canvas.addEventListener('pointerup', this.onCanvasPointerUp.bind(this));
     this.canvas.addEventListener('pointercancel', this.onCanvasPointerUp.bind(this));
+    window.addEventListener('resize', () => {
+      if (this.isExpanded) {
+        this.canvas.width = Math.min(window.innerWidth - 40, 420);
+        this.canvas.height = Math.min(window.innerHeight * 0.52, 380);
+      }
+    });
   }
 
   public isExpandedView(): boolean {
@@ -115,7 +122,9 @@ export class MiniMap {
       this.container.classList.add('expanded');
       this.canvas.width = Math.min(window.innerWidth - 40, 420);
       this.canvas.height = Math.min(window.innerHeight * 0.52, 380);
-      this.headerTitleEl.textContent = 'Drag corners or furniture • Tap ✕ to close';
+      this.headerTitleEl.textContent = this.isAutoScanMode
+        ? 'Auto Scan 2D Map • Tap ✕ to close'
+        : 'Drag corners or furniture • Tap ✕ to close';
       this.toggleBtn.textContent = '✕';
       this.toggleBtn.setAttribute('aria-label', 'Close 2D floor plan');
       this.canvas.style.touchAction = 'none';
@@ -330,6 +339,12 @@ export class MiniMap {
     furniture: FurnitureBox[] = [],
     openings: WallOpening[] = []
   ): void {
+    if (this.isAutoScanMode) {
+      this.isAutoScanMode = false;
+      if (this.isExpanded) {
+        this.headerTitleEl.textContent = 'Drag corners or furniture • Tap ✕ to close';
+      }
+    }
     this.lastFloorPoints = floorPoints;
     this.lastFurniture = furniture;
     const ctx = this.ctx;
@@ -580,6 +595,12 @@ export class MiniMap {
     furniture: FurnitureBox[] = [],
     openings: WallOpening[] = []
   ): void {
+    if (!this.isAutoScanMode) {
+      this.isAutoScanMode = true;
+      if (this.isExpanded) {
+        this.headerTitleEl.textContent = 'Auto Scan 2D Map • Tap ✕ to close';
+      }
+    }
     this.lastFloorPoints = [];
     this.lastFurniture = [];
     const ctx = this.ctx;

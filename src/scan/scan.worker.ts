@@ -11,16 +11,21 @@ const ctx = self as unknown as {
 
 const grid = new VoxelGrid();
 let lastEstimateAt = 0;
+let currentScanId = 0;
 
 ctx.onmessage = (e: MessageEvent<WorkerInMessage>) => {
   const msg = e.data;
   if (msg.type === 'RESET') {
+    currentScanId = msg.scanId;
     grid.reset();
     lastEstimateAt = 0;
     return;
   }
 
   if (msg.type === 'INGEST_FRAME') {
+    if (msg.scanId !== currentScanId) {
+      return;
+    }
     grid.ingestFrame(msg.payload);
 
     const now = performance.now();
@@ -39,6 +44,7 @@ ctx.onmessage = (e: MessageEvent<WorkerInMessage>) => {
 
     const out: WorkerOutMessage = {
       type: 'SCAN_UPDATE',
+      scanId: msg.scanId,
       shell,
       stats,
       furniture,

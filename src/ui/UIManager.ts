@@ -4,7 +4,8 @@ import { DepthDiagnostics } from '../xr/DepthExplorer';
 import { formatDistance, formatArea, formatVolume, calculateHorizontalDistance } from '../measurement/math';
 import { MiniMap } from './MiniMap';
 import { SnapshotManager } from './SnapshotManager';
-import { FurnitureBox, ShellEstimate, WallOpening } from '../scan/ScanTypes';
+import { FurnitureBox, ShellEstimate, SurfaceTextureMode, WallOpening } from '../scan/ScanTypes';
+import { exportRoomToGLB } from '../export/RoomGLBExporter';
 
 export interface UIElements {
   landingScreen: HTMLElement;
@@ -53,6 +54,9 @@ export interface UIElements {
   btnCopySummary: HTMLButtonElement;
   btnDownloadSvg: HTMLButtonElement;
   btnDownloadJson: HTMLButtonElement;
+  btnDownloadGlb?: HTMLButtonElement | null;
+  btnImportJson?: HTMLButtonElement | null;
+  inputImportJson?: HTMLInputElement | null;
   btnModalRestart: HTMLButtonElement;
 }
 
@@ -80,6 +84,8 @@ export class UIManager {
   private btnOpenHelp: HTMLButtonElement | null;
   private helpModal: HTMLDialogElement | null;
   private helpCloseBtn: HTMLButtonElement | null;
+  private photoFileInput: HTMLInputElement;
+  private pendingTextureSurfaceKey: string | null = null;
 
   constructor(
     els: UIElements,
@@ -109,6 +115,35 @@ export class UIManager {
       els.helpModal ?? (document.getElementById('help-modal') as HTMLDialogElement | null);
     this.helpCloseBtn =
       els.helpCloseBtn ?? (document.getElementById('help-close-btn') as HTMLButtonElement | null);
+
+    this.photoFileInput = document.createElement('input');
+    this.photoFileInput.type = 'file';
+    this.photoFileInput.accept = 'image/*';
+    this.photoFileInput.className = 'hidden';
+    this.els.arOverlay.appendChild(this.photoFileInput);
+    this.photoFileInput.addEventListener('change', async () => {
+      const file = this.photoFileInput.files?.[0];
+      const key = this.pendingTextureSurfaceKey;
+      this.photoFileInput.value = '';
+      this.pendingTextureSurfaceKey = null;
+      if (!file || !key) return;
+
+      try {
+        const dataUrl = await this.resizeImageToDataUrl(file, 1024, 0.82);
+        const existing = this.roomManager.getSurfaceTexture(key);
+        this.roomManager.setSurfaceTexture({
+          surfaceKey: key,
+          dataUrl,
+          mode: existing?.mode ?? (key.startsWith('wall:') ? 'stretch' : 'tile'),
+          tileSizeMeters: existing?.tileSizeMeters ?? 1.0
+        });
+        this.renderExportModalBody();
+        this.showToast('Surface photo attached!');
+      } catch (err) {
+        console.error('[Texture] Failed to process image:', err);
+        this.showToast('Could not read photo');
+      }
+    });
 
     this.miniMap = new MiniMap(
       this.els.arOverlay,
@@ -185,6 +220,10 @@ export class UIManager {
   private syncToggleButtons(): void {
     const isImperial = this.roomManager.getUnitSystem() === 'imperial';
     this.els.btnUnitToggle.setAttribute('aria-pressed', String(isImperial));
+    const unitLabel = this.els.btnUnitToggle.querySelector('span:last-child');
+    if (unitLabel) {
+      unitLabel.textContent = isImperial ? 'Imperial (ft)' : 'Metric (m)';
+    }
     this.els.btnSnapToggle.setAttribute(
       'aria-pressed',
       String(this.roomManager.getOrthoSnapEnabled())
@@ -465,7 +504,7 @@ export class UIManager {
       e.stopPropagation();
       const nextUnit = this.roomManager.getUnitSystem() === 'metric' ? 'imperial' : 'metric';
       this.roomManager.setUnitSystem(nextUnit);
-      this.els.btnUnitToggle.setAttribute('aria-pressed', String(nextUnit === 'imperial'));
+      this.syncToggleButtons();
       const msg = nextUnit === 'imperial' ? 'Switched to imperial units' : 'Switched to metric units';
       this.showToast(msg);
       this.announceToolbarStatus(msg);
@@ -528,12 +567,7 @@ export class UIManager {
       const roomName = (nameInput?.value || this.currentRoomNameDraft || 'Measured Room').trim();
       const svg = this.roomManager.generateSVGBlueprint(roomName);
       const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `room-blueprint-${Date.now()}.svg`;
-      a.click();
-      URL.revokeObjectURL(url);
+      this.triggerBlobDownload(blob, `room-blueprint-${Date.now()}.svg`);
       this.showToast('2D SVG blueprint downloaded!');
     });
 
@@ -541,14 +575,117 @@ export class UIManager {
       e.stopPropagation();
       const data = this.roomManager.getExportData();
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `room-measurement-${Date.now()}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      this.triggerBlobDownload(blob, `room-measurement-${Date.now()}.json`);
       this.showToast('JSON report downloaded!');
     });
+
+    this.els.btnDownloadGlb?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const btn = this.els.btnDownloadGlb!;
+      if (this.roomManager.getFloorPoints().length < 3) {
+        this.showToast('Measure at least 3 floor corners first');
+        return;
+      }
+      const nameInput = document.getElementById('room-name-input') as HTMLInputElement | null;
+      const roomName = (nameInput?.value || this.currentRoomNameDraft || 'Measured_Room').trim();
+      const prevText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Exporting...';
+      try {
+        const blob = await exportRoomToGLB(this.roomManager.getExportData(), roomName);
+        this.triggerBlobDownload(blob, `room-model-${Date.now()}.glb`);
+        this.showToast('Walkable 3D .glb downloaded!');
+      } catch (err) {
+        console.error('[GLB Export]', err);
+        this.showToast(`3D export failed: ${(err as Error).message}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prevText;
+      }
+    });
+
+    this.els.btnImportJson?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.els.inputImportJson?.click();
+    });
+
+    this.els.inputImportJson?.addEventListener('change', async () => {
+      const file = this.els.inputImportJson?.files?.[0];
+      if (this.els.inputImportJson) {
+        this.els.inputImportJson.value = '';
+      }
+      if (file) {
+        await this.importJsonFile(file);
+      }
+    });
+  }
+
+  private triggerBlobDownload(blob: Blob, filename: string): void {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  public async importJsonFile(file: File): Promise<void> {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as unknown;
+      const res = this.roomManager.importFromJSON(parsed);
+      if (!res.ok) {
+        this.showToast(res.error || 'Invalid room JSON');
+        return;
+      }
+      if (res.roomName) {
+        this.currentRoomNameDraft = res.roomName;
+      }
+      this.syncToggleButtons();
+      if (!this.els.exportModal.classList.contains('hidden')) {
+        this.renderExportModalBody();
+      }
+      this.showToast('Room imported into 3D scene!');
+    } catch {
+      this.showToast('Could not parse JSON file');
+    }
+  }
+
+  private async resizeImageToDataUrl(file: File, maxDim: number, quality: number): Promise<string> {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('2D canvas unavailable');
+
+    if (typeof createImageBitmap === 'function') {
+      const bmp = await createImageBitmap(file);
+      try {
+        const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+        canvas.width = Math.max(1, Math.round(bmp.width * scale));
+        canvas.height = Math.max(1, Math.round(bmp.height * scale));
+        ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg', quality);
+      } finally {
+        bmp.close();
+      }
+    }
+
+    const rawUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error('FileReader failed'));
+      reader.readAsDataURL(file);
+    });
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Image load failed'));
+      el.src = rawUrl;
+    });
+    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+    canvas.width = Math.max(1, Math.round(img.width * scale));
+    canvas.height = Math.max(1, Math.round(img.height * scale));
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', quality);
   }
 
   public showAROverlay(): void {
@@ -812,6 +949,31 @@ export class UIManager {
           .join('')
       : '';
 
+    const surfaceEntries: { key: string; label: string }[] = [];
+    if (floorPts.length >= 3) {
+      surfaceEntries.push({ key: 'floor', label: 'Floor' });
+    }
+    if (data.metrics.ceilingHeightMeters > 0.3 && floorPts.length >= 3) {
+      surfaceEntries.push({ key: 'ceiling', label: 'Ceiling' });
+    }
+    if (isClosed) {
+      for (let idx = 0; idx < floorPts.length; idx++) {
+        const p1 = floorPts[idx];
+        const p2 = floorPts[(idx + 1) % floorPts.length];
+        const len = calculateHorizontalDistance(p1, p2);
+        surfaceEntries.push({
+          key: `wall:${idx}`,
+          label: `Wall #${idx + 1} (${formatDistance(len, unit)})`
+        });
+      }
+    }
+    for (const f of data.furniture) {
+      surfaceEntries.push({ key: `furniture:${f.id}`, label: `🪑 ${f.label}` });
+    }
+    const existingTextures = new Map(
+      this.roomManager.getSurfaceTextures().map((t) => [t.surfaceKey, t])
+    );
+
     this.els.modalContent.innerHTML = `
       <div class="summary-grid">
         <div class="summary-item">
@@ -968,6 +1130,45 @@ export class UIManager {
                   <input type="number" step="0.05" min="0.15" class="inline-dim-input" value="${hDisp}" aria-label="Height in ${unitShort}" data-edit-furn-h="${this.escapeHtml(f.id)}" />
                   <button type="button" class="btn-mini" data-rotate-furn="${this.escapeHtml(f.id)}" title="Rotate 90 degrees">↻ 90°</button>
                   <button type="button" class="btn-mini btn-mini-danger" data-remove-furn="${this.escapeHtml(f.id)}">Remove</button>
+                </div>
+              </div>`;
+                  })
+                  .join('')
+          }
+        </div>
+      </section>
+
+      <section class="modal-section">
+        <div class="modal-section-title">Surface Photos (3D Textures)</div>
+        <div class="list-stack">
+          ${
+            surfaceEntries.length === 0
+              ? '<div class="list-item-row" style="color:#94a3b8;">Measure floor corners to attach surface photos for Blender .glb export.</div>'
+              : surfaceEntries
+                  .map((s) => {
+                    const tex = existingTextures.get(s.key);
+                    const thumbHtml = tex
+                      ? `<img class="texture-thumb" src="${tex.dataUrl}" alt="${this.escapeHtml(s.label)} texture" />`
+                      : '';
+                    const modeSelectHtml = tex
+                      ? `<select class="texture-select" data-tex-mode="${this.escapeHtml(s.key)}" aria-label="Texture mapping mode">
+                          <option value="stretch" ${tex.mode === 'stretch' ? 'selected' : ''}>Fit</option>
+                          <option value="tile" ${tex.mode === 'tile' ? 'selected' : ''}>Tile 1m</option>
+                        </select>`
+                      : '';
+                    const clearBtnHtml = tex
+                      ? `<button type="button" class="btn-mini btn-mini-danger" data-clear-tex="${this.escapeHtml(s.key)}" aria-label="Remove texture">✕</button>`
+                      : '';
+                    return `
+              <div class="texture-row">
+                <div class="texture-label-wrap">
+                  ${thumbHtml}
+                  <span>${this.escapeHtml(s.label)}</span>
+                </div>
+                <div class="list-item-actions">
+                  ${modeSelectHtml}
+                  <button type="button" class="btn-mini" data-pick-tex="${this.escapeHtml(s.key)}">📷 Photo</button>
+                  ${clearBtnHtml}
                 </div>
               </div>`;
                   })
@@ -1307,6 +1508,36 @@ export class UIManager {
         this.showToast('Room deleted from history');
       });
     });
+
+    content.querySelectorAll<HTMLButtonElement>('[data-pick-tex]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-pick-tex');
+        if (!key) return;
+        this.pendingTextureSurfaceKey = key;
+        this.photoFileInput.click();
+      });
+    });
+
+    content.querySelectorAll<HTMLSelectElement>('[data-tex-mode]').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const key = sel.getAttribute('data-tex-mode');
+        if (!key) return;
+        const existing = this.roomManager.getSurfaceTexture(key);
+        if (!existing) return;
+        const mode: SurfaceTextureMode = sel.value === 'stretch' ? 'stretch' : 'tile';
+        this.roomManager.setSurfaceTexture({ ...existing, mode });
+      });
+    });
+
+    content.querySelectorAll<HTMLButtonElement>('[data-clear-tex]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-clear-tex');
+        if (!key) return;
+        this.roomManager.removeSurfaceTexture(key);
+        this.renderExportModalBody();
+        this.showToast('Surface texture removed');
+      });
+    });
   }
 
   private escapeHtml(str: string): string {
@@ -1390,12 +1621,7 @@ export class UIManager {
 
   private downloadScreenshotFile(): void {
     if (!this.currentScreenshotBlob) return;
-    const url = URL.createObjectURL(this.currentScreenshotBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `spatial-room-${Date.now()}.png`;
-    a.click();
-    URL.revokeObjectURL(url);
+    this.triggerBlobDownload(this.currentScreenshotBlob, `spatial-room-${Date.now()}.png`);
     this.showToast('Photo saved to downloads!');
   }
 

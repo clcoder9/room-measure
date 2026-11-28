@@ -186,6 +186,9 @@ export class SpikeVisuals extends THREE.Group {
       this.planesGroup.visible = false;
     } else {
       this.simKitchenGroup.visible = false;
+      if (!this.pointsMesh.visible && !this.planesGroup.visible) {
+        this.visible = false;
+      }
     }
   }
 

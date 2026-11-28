@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { FurnitureBox, WallOpening } from '../scan/ScanTypes';
+import type { FurnitureBox, SurfaceTextureEntry, WallOpening } from '../scan/ScanTypes';
 import {
   UnitSystem,
   calculateHorizontalDistance,
@@ -22,6 +22,8 @@ export class MeasurementVisuals extends THREE.Group {
   private furnitureGroup: THREE.Group;
   private openingsGroup: THREE.Group;
   private markPreviewGroup: THREE.Group;
+  private texturePreviewGroup: THREE.Group;
+  private textureCache = new Map<string, THREE.Texture>();
   private polygonMesh: THREE.Mesh | null = null;
   private volumeMesh: THREE.Mesh | null = null;
   private liveLine: THREE.Line | null = null;
@@ -36,7 +38,7 @@ export class MeasurementVisuals extends THREE.Group {
 
   // Shared Geometries (reused across updates to prevent WebGL leaks)
   private sphereGeo = new THREE.SphereGeometry(0.025, 24, 24);
-  private pillarGeo = new THREE.CylinderGeometry(0.006, 0.006, 2.4, 12);
+  private pillarGeo = new THREE.CylinderGeometry(0.006, 0.006, 1, 12);
 
   // Materials
   private sphereMaterial = new THREE.MeshBasicMaterial({ color: 0x00f2fe });
@@ -123,6 +125,7 @@ export class MeasurementVisuals extends THREE.Group {
     this.furnitureGroup = new THREE.Group();
     this.openingsGroup = new THREE.Group();
     this.markPreviewGroup = new THREE.Group();
+    this.texturePreviewGroup = new THREE.Group();
 
     this.add(this.markersGroup);
     this.add(this.linesGroup);
@@ -130,6 +133,7 @@ export class MeasurementVisuals extends THREE.Group {
     this.add(this.furnitureGroup);
     this.add(this.openingsGroup);
     this.add(this.markPreviewGroup);
+    this.add(this.texturePreviewGroup);
 
     this.initLiveLine();
     this.initLiveAngleSprite();
@@ -167,6 +171,41 @@ export class MeasurementVisuals extends THREE.Group {
     this.add(sprite);
   }
 
+  private signedAreaXZ(points: THREE.Vector3[]): number {
+    let sum = 0;
+    const n = points.length;
+    for (let i = 0; i < n; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % n];
+      sum += a.x * b.z - b.x * a.z;
+    }
+    return sum * 0.5;
+  }
+
+  private getOrCreatePreviewTexture(entry: SurfaceTextureEntry): THREE.Texture {
+    const cacheKey = `${entry.mode}|${entry.dataUrl}`;
+    const existing = this.textureCache.get(cacheKey);
+    if (existing) return existing;
+
+    const img = new Image();
+    const tex = new THREE.Texture(img);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.flipY = true;
+    if (entry.mode === 'tile') {
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+    } else {
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+    }
+    img.onload = () => {
+      tex.needsUpdate = true;
+    };
+    img.src = entry.dataUrl;
+    this.textureCache.set(cacheKey, tex);
+    return tex;
+  }
+
   /**
    * Updates placed points, connecting lines, floor mesh, and volume visualization.
    */
@@ -176,9 +215,14 @@ export class MeasurementVisuals extends THREE.Group {
     isFloorClosed: boolean,
     unitSystem: UnitSystem = 'metric',
     furniture: FurnitureBox[] = [],
-    openings: WallOpening[] = []
+    openings: WallOpening[] = [],
+    surfaceTextures: SurfaceTextureEntry[] = []
   ): void {
     this.clearDynamicObjects();
+
+    const floorY = floorPoints.length > 0 ? calculateAverageFloorHeight(floorPoints) : 0;
+    const pillarH = ceilingPoint ? Math.max(0.5, Math.abs(ceilingPoint.y - floorY)) : 2.4;
+    const windingSign = floorPoints.length >= 3 && this.signedAreaXZ(floorPoints) < 0 ? -1 : 1;
 
     // 1. Draw corner anchor markers + vertical holographic beacons
     floorPoints.forEach((point, index) => {
@@ -191,12 +235,13 @@ export class MeasurementVisuals extends THREE.Group {
       mesh.renderOrder = 999;
       this.markersGroup.add(mesh);
 
-      // Vertical holographic light pillar (2.4m tall, visible from across the room)
+      // Vertical holographic light pillar scaled to ceiling height
       const pillar = new THREE.Mesh(
         this.pillarGeo,
         isFirst ? this.firstPillarMaterial : this.pillarMaterial
       );
-      pillar.position.set(point.x, point.y + 1.2, point.z);
+      pillar.scale.set(1, pillarH, 1);
+      pillar.position.set(point.x, point.y + pillarH * 0.5, point.z);
       pillar.renderOrder = 997;
       this.markersGroup.add(pillar);
 
@@ -264,7 +309,6 @@ export class MeasurementVisuals extends THREE.Group {
     }
 
     // 4. Draw Ceiling point & height drop line
-    const floorY = floorPoints.length > 0 ? calculateAverageFloorHeight(floorPoints) : 0;
     if (ceilingPoint && floorPoints.length >= 1) {
       const ceilingMesh = new THREE.Mesh(this.sphereGeo, this.ceilingSphereMaterial);
       ceilingMesh.position.copy(ceilingPoint);
@@ -330,8 +374,8 @@ export class MeasurementVisuals extends THREE.Group {
         if (wallLen < 0.05) continue;
         const tx = dx / wallLen;
         const tz = dz / wallLen;
-        const nx = -tz;
-        const nz = tx;
+        const nx = -tz * windingSign;
+        const nz = tx * windingSign;
 
         const s0 = Math.max(0, Math.min(wallLen, op.offsetAlongWallMeters));
         const s1 = Math.max(s0 + 0.05, Math.min(wallLen, s0 + op.widthMeters));
@@ -389,6 +433,215 @@ export class MeasurementVisuals extends THREE.Group {
         this.openingsGroup.add(badge);
       }
     }
+
+    // 8. Live Textured Surface Previews (when photos are attached to surfaces)
+    if (surfaceTextures.length > 0) {
+      this.buildTexturePreviews(
+        floorPoints,
+        ceilingPoint,
+        isFloorClosed,
+        floorY,
+        pillarH,
+        windingSign,
+        furniture,
+        surfaceTextures
+      );
+    }
+  }
+
+  private buildTexturePreviews(
+    floorPoints: THREE.Vector3[],
+    ceilingPoint: THREE.Vector3 | null,
+    isFloorClosed: boolean,
+    floorY: number,
+    wallH: number,
+    windingSign: number,
+    furniture: FurnitureBox[],
+    surfaceTextures: SurfaceTextureEntry[]
+  ): void {
+    const texMap = new Map<string, SurfaceTextureEntry>();
+    for (const st of surfaceTextures) {
+      texMap.set(st.surfaceKey, st);
+    }
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const p of floorPoints) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.z < minZ) minZ = p.z;
+      if (p.z > maxZ) maxZ = p.z;
+    }
+    const spanX = Math.max(0.1, maxX - minX);
+    const spanZ = Math.max(0.1, maxZ - minZ);
+
+    const floorTex = texMap.get('floor');
+    if (floorTex && floorPoints.length >= 3) {
+      const shape = new THREE.Shape();
+      shape.moveTo(floorPoints[0].x, -floorPoints[0].z);
+      for (let i = 1; i < floorPoints.length; i++) {
+        shape.lineTo(floorPoints[i].x, -floorPoints[i].z);
+      }
+      shape.closePath();
+      const geo = new THREE.ShapeGeometry(shape);
+      geo.rotateX(-Math.PI / 2);
+      geo.translate(0, floorY + 0.004, 0);
+      const pos = geo.getAttribute('position');
+      const uv = geo.getAttribute('uv');
+      const tile = Math.max(0.1, floorTex.tileSizeMeters || 1);
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const z = pos.getZ(i);
+        if (floorTex.mode === 'stretch') {
+          uv.setXY(i, (x - minX) / spanX, (z - minZ) / spanZ);
+        } else {
+          uv.setXY(i, (x - minX) / tile, (z - minZ) / tile);
+        }
+      }
+      uv.needsUpdate = true;
+      const mat = new THREE.MeshBasicMaterial({
+        map: this.getOrCreatePreviewTexture(floorTex),
+        transparent: true,
+        opacity: 0.85,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.renderOrder = 994;
+      this.texturePreviewGroup.add(mesh);
+    }
+
+    const ceilTex = texMap.get('ceiling');
+    if (ceilTex && floorPoints.length >= 3 && ceilingPoint) {
+      const ceilH = Math.abs(ceilingPoint.y - floorY);
+      const shape = new THREE.Shape();
+      shape.moveTo(floorPoints[0].x, floorPoints[0].z);
+      for (let i = 1; i < floorPoints.length; i++) {
+        shape.lineTo(floorPoints[i].x, floorPoints[i].z);
+      }
+      shape.closePath();
+      const geo = new THREE.ShapeGeometry(shape);
+      geo.rotateX(Math.PI / 2);
+      geo.translate(0, floorY + ceilH - 0.004, 0);
+      const pos = geo.getAttribute('position');
+      const uv = geo.getAttribute('uv');
+      const tile = Math.max(0.1, ceilTex.tileSizeMeters || 1);
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const z = pos.getZ(i);
+        if (ceilTex.mode === 'stretch') {
+          uv.setXY(i, (x - minX) / spanX, (z - minZ) / spanZ);
+        } else {
+          uv.setXY(i, (x - minX) / tile, (z - minZ) / tile);
+        }
+      }
+      uv.needsUpdate = true;
+      const mat = new THREE.MeshBasicMaterial({
+        map: this.getOrCreatePreviewTexture(ceilTex),
+        transparent: true,
+        opacity: 0.85,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.renderOrder = 994;
+      this.texturePreviewGroup.add(mesh);
+    }
+
+    if (isFloorClosed && floorPoints.length >= 3) {
+      const n = floorPoints.length;
+      const h = ceilingPoint ? wallH : 2.5;
+      for (let i = 0; i < n; i++) {
+        const wallTex = texMap.get(`wall:${i}`);
+        if (!wallTex) continue;
+        const p1 = floorPoints[i];
+        const p2 = floorPoints[(i + 1) % n];
+        const dx = p2.x - p1.x;
+        const dz = p2.z - p1.z;
+        const len = Math.hypot(dx, dz);
+        if (len < 0.05) continue;
+        const nx = (-dz / len) * windingSign;
+        const nz = (dx / len) * windingSign;
+        const offX = nx * 0.008;
+        const offZ = nz * 0.008;
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute(
+          'position',
+          new THREE.BufferAttribute(
+            new Float32Array([
+              p1.x + offX, floorY, p1.z + offZ,
+              p2.x + offX, floorY, p2.z + offZ,
+              p2.x + offX, floorY + h, p2.z + offZ,
+              p1.x + offX, floorY, p1.z + offZ,
+              p2.x + offX, floorY + h, p2.z + offZ,
+              p1.x + offX, floorY + h, p1.z + offZ
+            ]),
+            3
+          )
+        );
+        const tile = Math.max(0.1, wallTex.tileSizeMeters || 1);
+        const uMax = wallTex.mode === 'stretch' ? 1 : len / tile;
+        const vMax = wallTex.mode === 'stretch' ? 1 : h / tile;
+        geo.setAttribute(
+          'uv',
+          new THREE.BufferAttribute(
+            new Float32Array([0, 0, uMax, 0, uMax, vMax, 0, 0, uMax, vMax, 0, vMax]),
+            2
+          )
+        );
+        const mat = new THREE.MeshBasicMaterial({
+          map: this.getOrCreatePreviewTexture(wallTex),
+          transparent: true,
+          opacity: 0.85,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = 994;
+        this.texturePreviewGroup.add(mesh);
+      }
+    }
+
+    for (const f of furniture) {
+      const furnTex = texMap.get(`furniture:${f.id}`);
+      if (!furnTex) continue;
+      const baseFloorY = floorPoints.length > 0 ? floorY : f.floorY;
+      const geo = new THREE.BoxGeometry(f.widthMeters, f.heightMeters, f.depthMeters);
+      if (furnTex.mode === 'tile') {
+        const pos = geo.getAttribute('position');
+        const norm = geo.getAttribute('normal');
+        const uv = geo.getAttribute('uv');
+        const tile = Math.max(0.1, furnTex.tileSizeMeters || 1);
+        for (let i = 0; i < pos.count; i++) {
+          const anx = Math.abs(norm.getX(i));
+          const any = Math.abs(norm.getY(i));
+          const u = uv.getX(i);
+          const v = uv.getY(i);
+          if (anx > 0.5) {
+            uv.setXY(i, (u * f.depthMeters) / tile, (v * f.heightMeters) / tile);
+          } else if (any > 0.5) {
+            uv.setXY(i, (u * f.widthMeters) / tile, (v * f.depthMeters) / tile);
+          } else {
+            uv.setXY(i, (u * f.widthMeters) / tile, (v * f.heightMeters) / tile);
+          }
+        }
+        uv.needsUpdate = true;
+      }
+      const mat = new THREE.MeshBasicMaterial({
+        map: this.getOrCreatePreviewTexture(furnTex),
+        transparent: true,
+        opacity: 0.85,
+        depthWrite: false
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(f.centerXZ[0], baseFloorY + f.heightMeters * 0.5, f.centerXZ[1]);
+      mesh.rotation.y = -f.yawRad;
+      mesh.renderOrder = 994;
+      this.texturePreviewGroup.add(mesh);
+    }
   }
 
   public updateOpeningMarkPreview(
@@ -415,8 +668,9 @@ export class MeasurementVisuals extends THREE.Group {
     if (wallLen < 0.05) return;
     const tx = dx / wallLen;
     const tz = dz / wallLen;
-    const nx = -tz;
-    const nz = tx;
+    const windingSign = this.signedAreaXZ(floorPoints) < 0 ? -1 : 1;
+    const nx = -tz * windingSign;
+    const nz = tx * windingSign;
     const floorY = calculateAverageFloorHeight(floorPoints);
 
     const s0 = Math.min(first.alongM, live.alongM);
@@ -686,12 +940,15 @@ export class MeasurementVisuals extends THREE.Group {
     ctx.closePath();
   }
 
-  private disposeGroupObjects(group: THREE.Group): void {
+  private disposeGroupObjects(group: THREE.Group, preserveMaps = false): void {
     while (group.children.length > 0) {
       const obj = group.children[0];
       group.remove(obj);
       if (obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.LineSegments) {
         obj.geometry.dispose();
+        if (preserveMaps && obj instanceof THREE.Mesh && obj.material instanceof THREE.Material) {
+          obj.material.dispose();
+        }
       } else if (obj instanceof THREE.Sprite) {
         obj.material.map?.dispose();
         obj.material.dispose();
@@ -709,6 +966,7 @@ export class MeasurementVisuals extends THREE.Group {
     this.disposeGroupObjects(this.furnitureGroup);
     this.disposeGroupObjects(this.openingsGroup);
     this.disposeGroupObjects(this.markPreviewGroup);
+    this.disposeGroupObjects(this.texturePreviewGroup, true);
 
     if (this.polygonMesh) {
       this.remove(this.polygonMesh);
@@ -726,6 +984,10 @@ export class MeasurementVisuals extends THREE.Group {
 
   public reset(): void {
     this.clearDynamicObjects();
+    for (const tex of this.textureCache.values()) {
+      tex.dispose();
+    }
+    this.textureCache.clear();
     if (this.liveLine) {
       this.liveLine.visible = false;
     }

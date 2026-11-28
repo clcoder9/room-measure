@@ -12,7 +12,7 @@ Test the app directly online via GitHub Pages:
 
 **[https://clcoder9.github.io/room-measure/](https://clcoder9.github.io/room-measure/)**
 
-GitHub Pages serves the app over HTTPS, providing the **Secure Context** required for WebXR `immersive-ar` sessions in Chrome on Android, as well as the built-in **3D Desktop Simulator** on any desktop browser. Automatic deployments run via GitHub Actions on every push to `main`.
+GitHub Pages serves the app over HTTPS, providing the **Secure Context** required for WebXR `immersive-ar` sessions in Chrome on Android, as well as the built-in **3D Viewer** on any desktop browser. Automatic deployments run via GitHub Actions on every push to `main`.
 
 ---
 
@@ -44,13 +44,14 @@ GitHub Pages serves the app over HTTPS, providing the **Secure Context** require
    - Queries `XRFrame.getDepthInformation(view)` during active AR sessions on Pixel Pro hardware (`cpu-optimized`, `luminance-alpha` / `float32`).
    - Displays real-time depth buffer availability and status directly in the HUD diagnostic badge.
 
-5. **Desktop 3D Simulator Fallback:**
-   - When running in desktop browsers or environments without WebXR AR hardware, users can launch the built-in 3D Desktop Simulator to test the complete measurement flow, geometry math, and export capabilities.
+5. **Desktop 3D Viewer & JSON Import:**
+   - When running in desktop browsers or environments without WebXR AR hardware, users can launch the built-in **3D Viewer** to test the measurement flow, or import previously exported room JSON files for inspection and editing.
 
-6. **Summary & Export:**
+6. **Summary, Photo Textures & 3D Export:**
    - Minimalist, high-contrast HUD overlay with live metric readouts.
+   - Attach per-surface photos (floor, ceiling, walls, furniture) as 3D textures.
    - Detailed modal summary with metric and imperial units ($m^2$ / sq ft, $m^3$ / cu ft).
-   - Copy formatted summary to clipboard or download complete structured JSON file with 3D coordinates.
+   - Export walkable, Blender-ready **`.glb` (glTF 2.0)** models with door/window cutouts and metric UVs, 2D SVG blueprints, JSON reports, or AR snapshots.
 
 ---
 

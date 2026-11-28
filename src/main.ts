@@ -199,6 +199,9 @@ function initApp(): void {
     btnCopySummary: document.getElementById('btn-copy-summary') as HTMLButtonElement,
     btnDownloadSvg: document.getElementById('btn-download-svg') as HTMLButtonElement,
     btnDownloadJson: document.getElementById('btn-download-json') as HTMLButtonElement,
+    btnDownloadGlb: document.getElementById('btn-download-glb') as HTMLButtonElement | null,
+    btnImportJson: document.getElementById('btn-import-json') as HTMLButtonElement | null,
+    inputImportJson: document.getElementById('input-import-json') as HTMLInputElement | null,
     btnModalRestart: document.getElementById('btn-modal-restart') as HTMLButtonElement
   };
 
@@ -207,6 +210,8 @@ function initApp(): void {
   const btnStartAutoScan = document.getElementById('btn-start-autoscan') as HTMLButtonElement | null;
   const btnStartSpike = document.getElementById('btn-start-spike') as HTMLButtonElement | null;
   const btnSpikeDepthPref = document.getElementById('btn-spike-depth-pref') as HTMLButtonElement | null;
+  const btnDebugToggle = document.getElementById('btn-debug-toggle') as HTMLButtonElement | null;
+  const debugLauncherSection = document.getElementById('debug-launcher-section');
 
   let uiManager: UIManager;
   let spikeOverlayUI: SpikeOverlayUI;
@@ -278,6 +283,9 @@ function initApp(): void {
     },
     onRestartSessionRequested: async () => {
       await xrManager.restartSession();
+      if (xrManager.isAutoScanActive()) {
+        autoScanHUD.resetDisplay();
+      }
       syncModeUI();
     },
     onSpikeToggleRequested: () => {
@@ -408,15 +416,47 @@ function initApp(): void {
   (window as any).__roomManager = xrManager.getRoomManager();
   (window as any).THREE = THREE;
 
+  // Debug Mode toggle (footer button or ?debug=1)
+  const DEBUG_STORAGE_KEY = 'spatialmeasure_debug_mode';
+  let debugModeEnabled = new URLSearchParams(window.location.search).get('debug') === '1';
+  if (!debugModeEnabled) {
+    try {
+      debugModeEnabled = localStorage.getItem(DEBUG_STORAGE_KEY) === '1';
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  const applyDebugMode = (enabled: boolean) => {
+    debugModeEnabled = enabled;
+    debugLauncherSection?.classList.toggle('hidden', !enabled);
+    uiElements.btnSpikeToggle?.classList.toggle('hidden', !enabled);
+    btnDebugToggle?.setAttribute('aria-pressed', String(enabled));
+    if (!enabled && xrManager.isSpikeModeActive()) {
+      xrManager.setSpikeModeActive(false);
+      syncModeUI();
+    }
+    try {
+      localStorage.setItem(DEBUG_STORAGE_KEY, enabled ? '1' : '0');
+    } catch {
+      // Ignore storage errors
+    }
+  };
+  applyDebugMode(debugModeEnabled);
+
+  btnDebugToggle?.addEventListener('click', () => {
+    applyDebugMode(!debugModeEnabled);
+  });
+
   // WebXR Compatibility Detection
   XRManager.isARSupported().then((supported) => {
     if (supported) {
       compatIndicator.className = 'indicator-dot ready';
-      compatLabel.textContent = 'WebXR AR Supported (Chrome Android / Pixel Pro)';
+      compatLabel.textContent = 'AR Ready';
       uiElements.btnStartAR.disabled = false;
     } else {
       compatIndicator.className = 'indicator-dot unsupported';
-      compatLabel.textContent = 'WebXR AR Not Detected (Simulator Ready)';
+      compatLabel.textContent = 'Viewer Only';
       uiElements.btnStartAR.disabled = true;
       uiElements.btnStartAR.title = 'WebXR immersive-ar session mode is not supported on this browser/platform.';
     }
@@ -443,8 +483,8 @@ function initApp(): void {
         await xrManager.startARSession();
         return;
       } catch (err) {
-        console.warn('[AutoScan] AR launch failed, falling back to simulator:', err);
-        uiManager.showToast(`AR failed (${(err as Error).message}), opening Simulator`);
+        console.warn('[AutoScan] AR launch failed, falling back to 3D Viewer:', err);
+        uiManager.showToast(`AR failed (${(err as Error).message}), opening 3D Viewer`);
       }
     }
     xrManager.startSimulatorSession();
@@ -465,11 +505,25 @@ function initApp(): void {
         await xrManager.startARSession();
         return;
       } catch (err) {
-        console.warn('[Spike] AR launch failed, falling back to simulator:', err);
-        uiManager.showToast(`AR failed (${(err as Error).message}), opening Simulator`);
+        console.warn('[Spike] AR launch failed, falling back to 3D Viewer:', err);
+        uiManager.showToast(`AR failed (${(err as Error).message}), opening 3D Viewer`);
       }
     }
     xrManager.startSimulatorSession();
+  });
+
+  // Allow dropping a room JSON file directly onto the 3D Viewer canvas
+  container.addEventListener('dragover', (e) => {
+    if (!xrManager.isViewerMode()) return;
+    e.preventDefault();
+  });
+  container.addEventListener('drop', async (e) => {
+    if (!xrManager.isViewerMode()) return;
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (file && file.name.toLowerCase().endsWith('.json')) {
+      await uiManager.importJsonFile(file);
+    }
   });
 }
 

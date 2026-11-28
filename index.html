@@ -95,74 +95,78 @@
             </svg>
           </div>
           <h1>SpatialMeasure AR</h1>
-          <p class="subtitle">3D Room Dimensions, Floor Plan &amp; Volumetric Scanner</p>
+          <p class="subtitle">AR Room Scanner</p>
         </div>
 
         <div id="device-support-card" class="compat-card">
           <div class="compat-status">
             <span id="compat-indicator" class="indicator-dot pending"></span>
-            <span id="compat-label">Checking WebXR AR capability...</span>
+            <span id="compat-label">Checking AR...</span>
           </div>
-          <div id="depth-support-hint" class="compat-subtext">Target: Chrome on Android (Pixel Pro / ARCore)</div>
         </div>
 
         <div class="launch-actions">
-          <button type="button" id="btn-start-ar" class="btn btn-primary" disabled>
-            <span class="btn-icon" aria-hidden="true">⚡</span>
-            <span>Launch WebXR AR Session</span>
-          </button>
-          <button type="button" id="btn-start-autoscan" class="btn btn-autoscan-launch">
+          <button type="button" id="btn-start-autoscan" class="btn btn-primary">
             <span class="btn-icon" aria-hidden="true">✨</span>
-            <span>Auto Scan Room Layout</span>
+            <span>Auto Scan</span>
+          </button>
+          <button type="button" id="btn-start-ar" class="btn btn-secondary" disabled>
+            <span class="btn-icon" aria-hidden="true">📍</span>
+            <span>Manual AR</span>
           </button>
           <button type="button" id="btn-start-sim" class="btn btn-secondary">
-            <span class="btn-icon" aria-hidden="true">🖥️</span>
-            <span>Launch 3D Simulator (Desktop)</span>
+            <span class="btn-icon" aria-hidden="true">🧊</span>
+            <span>3D Viewer</span>
           </button>
+          <button type="button" id="btn-open-help" class="btn btn-ghost-help">
+            <span class="btn-icon" aria-hidden="true">❓</span>
+            <span>Guide</span>
+          </button>
+        </div>
+
+        <div id="debug-launcher-section" class="debug-launcher-section hidden">
           <div class="spike-launch-row">
             <button type="button" id="btn-start-spike" class="btn btn-spike-launch">
               <span class="btn-icon" aria-hidden="true">🔬</span>
-              <span>Phase 0: Sensor &amp; Depth Spike</span>
+              <span>Sensor Debug</span>
             </button>
             <button type="button" id="btn-spike-depth-pref" class="btn-spike-pref" title="Toggle WebXR depthTypeRequest preference">
               Depth: Raw
             </button>
           </div>
-          <button type="button" id="btn-open-help" class="btn btn-ghost-help">
-            <span class="btn-icon" aria-hidden="true">❓</span>
-            <span>How to Use &amp; Measurement Guide</span>
-          </button>
+
+          <section id="landing-spike-saved-card" class="landing-spike-card hidden" aria-label="Saved Phase 0 Spike Report">
+            <div class="landing-spike-header">
+              <span class="modal-section-title">🔬 Last Spike Report</span>
+              <span id="landing-spike-summary" class="landing-spike-summary">--</span>
+            </div>
+            <div class="landing-spike-actions">
+              <span class="copy">
+                <button
+                  type="button"
+                  id="btn-landing-spike-copy"
+                  class="btn-mini copy-button"
+                  command="--copy"
+                  commandfor="landing-spike-report-pre"
+                  aria-label="Copy saved Spike JSON report"
+                >
+                  <span class="copy-icon" aria-hidden="true">📋</span>
+                  <span id="landing-spike-copy-label">Copy JSON</span>
+                </button>
+                <span class="tip" role="status"></span>
+              </span>
+              <button type="button" id="btn-landing-spike-download" class="btn-mini">💾 Save JSON</button>
+              <button type="button" id="btn-landing-spike-clear" class="btn-mini btn-mini-danger">🗑️ Clear</button>
+            </div>
+            <pre id="landing-spike-report-pre" class="sr-only"></pre>
+          </section>
         </div>
 
-        <section id="landing-spike-saved-card" class="landing-spike-card hidden" aria-label="Saved Phase 0 Spike Report">
-          <div class="landing-spike-header">
-            <span class="modal-section-title">🔬 Last Phase 0 Spike Report</span>
-            <span id="landing-spike-summary" class="landing-spike-summary">--</span>
-          </div>
-          <div class="landing-spike-actions">
-            <span class="copy">
-              <button
-                type="button"
-                id="btn-landing-spike-copy"
-                class="btn-mini copy-button"
-                command="--copy"
-                commandfor="landing-spike-report-pre"
-                aria-label="Copy saved Spike JSON report"
-              >
-                <span class="copy-icon" aria-hidden="true">📋</span>
-                <span id="landing-spike-copy-label">Copy Spike JSON</span>
-              </button>
-              <span class="tip" role="status"></span>
-            </span>
-            <button type="button" id="btn-landing-spike-download" class="btn-mini">💾 Save JSON</button>
-            <button type="button" id="btn-landing-spike-clear" class="btn-mini btn-mini-danger">🗑️ Clear</button>
-          </div>
-          <pre id="landing-spike-report-pre" class="sr-only"></pre>
-        </section>
-
         <div class="footer-note">
-          Supports WebXR <code>hit-test</code>, <code>dom-overlay</code> &amp; <code>depth-sensing</code>.
-          <div id="app-version-label" class="version-label"></div>
+          <div class="footer-meta-row">
+            <span id="app-version-label" class="version-label"></span>
+            <button type="button" id="btn-debug-toggle" class="btn-footer-debug" aria-pressed="false" title="Toggle sensor debug mode">Debug</button>
+          </div>
         </div>
       </div>
     </div>
@@ -211,12 +215,12 @@
             <ul class="help-tools-list">
               <li><strong>2D Radar Plan:</strong> Tap top-right mini-map to expand &amp; drag corners to fine-tune.</li>
               <li><strong>Doors &amp; Windows (Openings):</strong> Subtract presets or custom openings for Net Wall Area.</li>
-              <li><strong>Export &amp; Photo:</strong> Download SVG blueprints, JSON reports, or composite AR snapshots.</li>
+              <li><strong>Export, 3D &amp; Photos:</strong> Attach surface photos and export Blender-ready walkable <code>.glb</code> models, JSON (importable in 3D Viewer), SVG blueprints, or AR snapshots.</li>
             </ul>
           </section>
 
           <p class="help-compat-note">
-            Uses WebXR <code>hit-test</code>, <code>dom-overlay</code>, and optional <code>depth-sensing</code> on Chrome Android (ARCore), plus an interactive Desktop 3D Simulator.
+            Uses WebXR <code>hit-test</code>, <code>dom-overlay</code>, and optional <code>depth-sensing</code> on Chrome Android (ARCore), plus an interactive 3D Viewer on desktop.
           </p>
         </div>
         <form method="dialog" class="help-dialog-footer">
@@ -435,9 +439,9 @@
           <span role="separator" aria-orientation="vertical" class="toolbar-separator"></span>
 
           <div role="group" aria-label="Output and Units" class="toolbar-group">
-            <button type="button" id="btn-unit-toggle" class="btn-toolbar" aria-pressed="false" title="Toggle Imperial units">
+            <button type="button" id="btn-unit-toggle" class="btn-toolbar" aria-pressed="false" title="Toggle Metric / Imperial units">
               <span aria-hidden="true">📏</span>
-              <span>Imperial (ft)</span>
+              <span>Metric (m)</span>
             </button>
             <button type="button" id="btn-openings" class="btn-toolbar" title="Edit doors, windows, and furniture">
               <span aria-hidden="true">🚪</span>
@@ -447,9 +451,9 @@
               <span aria-hidden="true">✨</span>
               <span>Auto Scan</span>
             </button>
-            <button type="button" id="btn-spike-toggle" class="btn-toolbar" aria-pressed="false" title="Toggle Phase 0 Sensor & Depth Spike">
+            <button type="button" id="btn-spike-toggle" class="btn-toolbar hidden" aria-pressed="false" title="Toggle Sensor Debug mode">
               <span aria-hidden="true">🔬</span>
-              <span>Spike</span>
+              <span>Debug</span>
             </button>
             <button type="button" id="btn-export" class="btn-toolbar" title="Export summary and saved rooms">
               <span aria-hidden="true">📄</span>
@@ -480,7 +484,7 @@
           </div>
           <pre id="summary-report-pre" class="sr-only"></pre>
           <div class="modal-actions">
-            <button type="button" id="btn-modal-restart" class="btn btn-secondary">🔄 New Room</button>
+            <button type="button" id="btn-modal-restart" class="btn btn-secondary">🔄 New</button>
             <span class="copy">
               <button
                 type="button"
@@ -494,8 +498,11 @@
               </button>
               <span class="tip" role="status"></span>
             </span>
-            <button type="button" id="btn-download-svg" class="btn btn-secondary">📐 SVG Plan</button>
-            <button type="button" id="btn-download-json" class="btn btn-primary">💾 JSON</button>
+            <button type="button" id="btn-download-svg" class="btn btn-secondary">📐 SVG</button>
+            <button type="button" id="btn-download-json" class="btn btn-secondary">💾 JSON</button>
+            <button type="button" id="btn-import-json" class="btn btn-secondary">📂 Import</button>
+            <button type="button" id="btn-download-glb" class="btn btn-primary">🧊 3D (.glb)</button>
+            <input type="file" id="input-import-json" accept=".json,application/json" class="hidden" />
           </div>
         </div>
       </div>

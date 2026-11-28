@@ -263,7 +263,7 @@ export class SpikeOverlayUI {
     const s = this.probe.getSessionInfo();
     const m = this.probe.getLatestMetrics();
 
-    this.modePillEl.textContent = s.mode === 'immersive-ar' ? 'AR LIVE' : 'SIM';
+    this.modePillEl.textContent = s.mode === 'immersive-ar' ? 'AR LIVE' : 'VIEWER';
     this.modePillEl.className = `spike-mode-pill ${s.mode === 'immersive-ar' ? 'live' : 'sim'}`;
 
     if (s.depthActive && s.depthWidth > 0) {
@@ -390,7 +390,7 @@ export class SpikeOverlayUI {
     a.href = url;
     a.download = `pixel11pro-phase0-spike-${Date.now()}.json`;
     a.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
     this.callbacks.onToast('Spike JSON report downloaded!');
   }
 }

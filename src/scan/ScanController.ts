@@ -28,6 +28,7 @@ export class ScanController {
   private paused = false;
   private isSimulator = false;
   private lastSampleTime = 0;
+  private scanId = 0;
 
   private latestShell: ShellEstimate | null = null;
   private latestStats: ScanStats | null = null;
@@ -54,7 +55,7 @@ export class ScanController {
     this.visuals = visuals;
     this.worker = new Worker(new URL('./scan.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e: MessageEvent<WorkerOutMessage>) => {
-      if (e.data.type !== 'SCAN_UPDATE' || !this.active) return;
+      if (e.data.type !== 'SCAN_UPDATE' || !this.active || e.data.scanId !== this.scanId) return;
       this.latestShell = e.data.shell;
       this.latestStats = e.data.stats;
       this.latestFurniture = e.data.furniture ?? [];
@@ -81,10 +82,22 @@ export class ScanController {
     };
 
     window.addEventListener('keydown', (e) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
       this.keysPressed.add(e.code);
     });
     window.addEventListener('keyup', (e) => {
       this.keysPressed.delete(e.code);
+    });
+    window.addEventListener('blur', () => {
+      this.keysPressed.clear();
     });
   }
 
@@ -130,6 +143,7 @@ export class ScanController {
   public stop(): void {
     this.active = false;
     this.paused = false;
+    this.keysPressed.clear();
     this.visuals.setActive(false);
   }
 
@@ -138,6 +152,7 @@ export class ScanController {
   }
 
   public reset(): void {
+    this.scanId++;
     this.latestShell = null;
     this.latestStats = null;
     this.latestFurniture = [];
@@ -145,7 +160,7 @@ export class ScanController {
     this.latestPathXZ = new Float32Array(0);
     this.lastSampleTime = 0;
     this.visuals.reset();
-    const msg: WorkerInMessage = { type: 'RESET' };
+    const msg: WorkerInMessage = { type: 'RESET', scanId: this.scanId };
     this.worker.postMessage(msg);
   }
 
@@ -257,7 +272,7 @@ export class ScanController {
       planes
     };
 
-    const msg: WorkerInMessage = { type: 'INGEST_FRAME', payload };
+    const msg: WorkerInMessage = { type: 'INGEST_FRAME', scanId: this.scanId, payload };
     this.worker.postMessage(msg, transferables);
   }
 
@@ -323,7 +338,7 @@ export class ScanController {
       planes: []
     };
 
-    const msg: WorkerInMessage = { type: 'INGEST_FRAME', payload };
+    const msg: WorkerInMessage = { type: 'INGEST_FRAME', scanId: this.scanId, payload };
     this.worker.postMessage(msg, [
       depthArr.buffer,
       normDepthFromNormView.buffer,

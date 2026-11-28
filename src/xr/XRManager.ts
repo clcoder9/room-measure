@@ -170,6 +170,10 @@ export class XRManager {
     return this.autoScanActive;
   }
 
+  public isViewerMode(): boolean {
+    return this.isSimulatedMode;
+  }
+
   public setAutoScanActive(active: boolean): void {
     this.autoScanActive = active;
     if (active) {
@@ -178,9 +182,11 @@ export class XRManager {
       if (this.isSimulatedMode) {
         this.spikeVisuals.setSimKitchenVisible(true);
       }
+      this.scanController.reset();
       this.scanController.start(this.isSimulatedMode);
     } else {
       this.scanController.stop();
+      this.scanController.reset();
       this.spikeVisuals.setSimKitchenVisible(false);
     }
   }
@@ -465,9 +471,11 @@ export class XRManager {
       });
       this.spikeVisuals.setActive(this.spikeModeActive, false);
       if (this.autoScanActive) {
+        this.scanController.reset();
         this.scanController.start(false);
       } else {
         this.scanController.stop();
+        this.scanController.reset();
       }
       this.notifyStatus('AR active. Point camera at floor.');
 
@@ -520,12 +528,14 @@ export class XRManager {
     this.spikeVisuals.setActive(this.spikeModeActive, true);
     if (this.autoScanActive) {
       this.spikeVisuals.setSimKitchenVisible(true);
+      this.scanController.reset();
       this.scanController.start(true);
     } else {
       this.scanController.stop();
+      this.scanController.reset();
     }
 
-    this.notifyStatus('Simulator active. Left-click to pin, drag to orbit.');
+    this.notifyStatus('3D Viewer active. Left-click to pin, drag to orbit.');
 
     if (this.onSessionStarted) {
       this.onSessionStarted();
@@ -883,6 +893,7 @@ export class XRManager {
     this.reticle.setSnapped(false);
     this.spikeVisuals.setActive(false, false);
     this.scanController.stop();
+    this.scanController.reset();
     this.renderer.setAnimationLoop(null);
     this.notifyStatus('AR session ended.');
 
@@ -902,6 +913,7 @@ export class XRManager {
       this.reticle.setSnapped(false);
       this.spikeVisuals.setActive(false, false);
       this.scanController.stop();
+      this.scanController.reset();
       if (this.onSessionEnded) {
         this.onSessionEnded();
       }
@@ -946,14 +958,19 @@ export class XRManager {
         console.warn('[WebXR] Re-anchoring error:', err);
       }
     } else if (this.isSimulatedMode) {
-      this.camera.position.set(0, 2.2, 3.8);
+      const useKitchenCam = this.autoScanActive || this.spikeModeActive;
+      if (useKitchenCam) {
+        this.camera.position.set(0.2, 1.55, 1.2);
+      } else {
+        this.camera.position.set(0, 2.2, 3.8);
+      }
       if (this.orbitControls) {
-        this.orbitControls.target.set(0, 0, 0);
+        this.orbitControls.target.set(0, useKitchenCam ? 1.2 : 0, useKitchenCam ? -1.8 : 0);
         this.orbitControls.update();
       } else {
-        this.camera.lookAt(0, 0, 0);
+        this.camera.lookAt(0, useKitchenCam ? 1.2 : 0, useKitchenCam ? -1.8 : 0);
       }
-      this.notifyStatus('Simulator session reset.');
+      this.notifyStatus('3D Viewer session reset.');
     }
   }
 
