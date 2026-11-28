@@ -111,6 +111,10 @@
             <span class="btn-icon" aria-hidden="true">⚡</span>
             <span>Launch WebXR AR Session</span>
           </button>
+          <button type="button" id="btn-start-autoscan" class="btn btn-autoscan-launch">
+            <span class="btn-icon" aria-hidden="true">✨</span>
+            <span>Auto Scan Room Layout</span>
+          </button>
           <button type="button" id="btn-start-sim" class="btn btn-secondary">
             <span class="btn-icon" aria-hidden="true">🖥️</span>
             <span>Launch 3D Simulator (Desktop)</span>
@@ -323,6 +327,50 @@
         </div>
       </section>
 
+      <!-- Auto Room Scan Floating HUD -->
+      <section id="autoscan-panel" class="autoscan-panel hidden" aria-label="Auto Room Scan">
+        <div class="autoscan-header">
+          <div class="autoscan-title-group">
+            <span id="autoscan-title" class="autoscan-title">✨ Auto Room Scan</span>
+            <span id="autoscan-wall-pill" class="badge badge-warning">Scanning...</span>
+          </div>
+          <div class="autoscan-header-actions">
+            <button type="button" id="btn-autoscan-pts" class="btn-mini" aria-pressed="true" title="Toggle voxel points">Pts</button>
+            <button type="button" id="btn-autoscan-pause" class="btn-mini" aria-pressed="false" title="Pause or resume scanning">Pause</button>
+            <button type="button" id="btn-autoscan-reset" class="btn-mini" title="Clear scan and restart">↺ Reset</button>
+            <button type="button" id="btn-autoscan-exit" class="btn-mini btn-mini-danger" title="Switch to manual mode">✕ Manual</button>
+          </div>
+        </div>
+
+        <progress id="autoscan-progress" class="autoscan-progress" max="100" aria-labelledby="autoscan-title"></progress>
+
+        <p id="autoscan-hint" class="autoscan-hint">Walk slowly and pan across room walls and floor.</p>
+        <p id="autoscan-live-announce" role="status" class="sr-only"></p>
+
+        <div class="autoscan-metrics-grid">
+          <div class="metric-box">
+            <span class="metric-label">Floor Area</span>
+            <span id="autoscan-val-area" class="metric-value highlight">--</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">Ceiling Height</span>
+            <span id="autoscan-val-height" class="metric-value">--</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">Walls</span>
+            <span id="autoscan-val-walls" class="metric-value">0</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">Passes / Voxels</span>
+            <span id="autoscan-val-passes" class="metric-value">0 pts</span>
+          </div>
+        </div>
+
+        <button type="button" id="btn-autoscan-finish" class="btn-hud btn-hud-primary" disabled>
+          ✅ Finish &amp; Edit 3D Wireframe
+        </button>
+      </section>
+
       <!-- Instruction Banner -->
       <div class="instruction-banner">
         <p id="instruction-text">Point camera at floor and move phone slowly to detect surfaces.</p>
@@ -394,6 +442,10 @@
             <button type="button" id="btn-openings" class="btn-toolbar" title="Add doors and windows">
               <span aria-hidden="true">🚪</span>
               <span>Openings</span>
+            </button>
+            <button type="button" id="btn-autoscan-toggle" class="btn-toolbar" aria-pressed="false" title="Toggle Auto Room Scan mode">
+              <span aria-hidden="true">✨</span>
+              <span>Auto Scan</span>
             </button>
             <button type="button" id="btn-spike-toggle" class="btn-toolbar" aria-pressed="false" title="Toggle Phase 0 Sensor & Depth Spike">
               <span aria-hidden="true">🔬</span>

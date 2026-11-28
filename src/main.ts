@@ -4,6 +4,7 @@ import { XRManager } from './xr/XRManager';
 import { UIManager, UIElements } from './ui/UIManager';
 import { SnapshotManager } from './ui/SnapshotManager';
 import { SpikeOverlayUI } from './spike/SpikeOverlayUI';
+import { AutoScanHUD } from './ui/AutoScanHUD';
 
 let isRefreshing = false;
 
@@ -189,6 +190,7 @@ function initApp(): void {
     btnUnitToggle: document.getElementById('btn-unit-toggle') as HTMLButtonElement,
     btnOpenings: document.getElementById('btn-openings') as HTMLButtonElement,
     btnSpikeToggle: document.getElementById('btn-spike-toggle') as HTMLButtonElement | null,
+    btnAutoScanToggle: document.getElementById('btn-autoscan-toggle') as HTMLButtonElement | null,
     btnExport: document.getElementById('btn-export') as HTMLButtonElement,
     exportModal: document.getElementById('export-modal')!,
     modalCloseBtn: document.getElementById('modal-close-btn') as HTMLButtonElement,
@@ -202,16 +204,21 @@ function initApp(): void {
 
   const compatIndicator = document.getElementById('compat-indicator')!;
   const compatLabel = document.getElementById('compat-label')!;
+  const btnStartAutoScan = document.getElementById('btn-start-autoscan') as HTMLButtonElement | null;
   const btnStartSpike = document.getElementById('btn-start-spike') as HTMLButtonElement | null;
   const btnSpikeDepthPref = document.getElementById('btn-spike-depth-pref') as HTMLButtonElement | null;
 
   let uiManager: UIManager;
   let spikeOverlayUI: SpikeOverlayUI;
+  let autoScanHUD: AutoScanHUD;
 
-  const syncSpikeModeUI = () => {
-    const active = xrManager.isSpikeModeActive();
-    uiManager.setSpikeUIMode(active);
-    spikeOverlayUI.setVisible(active);
+  const syncModeUI = () => {
+    const spikeActive = xrManager.isSpikeModeActive();
+    const autoActive = xrManager.isAutoScanActive();
+    uiManager.setSpikeUIMode(spikeActive);
+    uiManager.setAutoScanUIMode(autoActive);
+    spikeOverlayUI.setVisible(spikeActive);
+    autoScanHUD.setVisible(autoActive);
   };
 
   // Initialize XR Manager
@@ -220,17 +227,26 @@ function initApp(): void {
     overlayElement,
     onSessionStarted: () => {
       uiManager.showAROverlay();
-      syncSpikeModeUI();
+      syncModeUI();
     },
     onSessionEnded: () => {
       uiManager.showLandingScreen();
       spikeOverlayUI.setVisible(false);
+      autoScanHUD.setVisible(false);
     },
     onStatusMessage: (msg) => {
       console.log('[XR Status]', msg);
     },
     onRenderFrame: (reticlePos, camera) => {
-      if (uiManager && !xrManager.isSpikeModeActive()) {
+      if (!uiManager) return;
+      if (xrManager.isAutoScanActive()) {
+        const sc = xrManager.getScanController();
+        uiManager.renderAutoScanMiniMap(
+          sc.getLatestShell(),
+          sc.getLatestCameraPathXZ(),
+          camera
+        );
+      } else if (!xrManager.isSpikeModeActive()) {
         uiManager.renderMiniMap(
           xrManager.getRoomManager().getFloorPoints(),
           xrManager.getRoomManager().isClosed(),
@@ -257,13 +273,19 @@ function initApp(): void {
     },
     onRestartSessionRequested: async () => {
       await xrManager.restartSession();
-      syncSpikeModeUI();
+      syncModeUI();
     },
     onSpikeToggleRequested: () => {
       const next = !xrManager.isSpikeModeActive();
       xrManager.setSpikeModeActive(next);
-      syncSpikeModeUI();
+      syncModeUI();
       uiManager.showToast(next ? 'Phase 0 Spike mode enabled' : 'Returned to manual measurement');
+    },
+    onAutoScanToggleRequested: () => {
+      const next = !xrManager.isAutoScanActive();
+      xrManager.setAutoScanActive(next);
+      syncModeUI();
+      uiManager.showToast(next ? 'Auto Room Scan enabled' : 'Returned to manual measurement');
     },
     onBeforeCopy: (targetId) => {
       if (targetId === 'spike-report-pre') {
@@ -277,13 +299,56 @@ function initApp(): void {
     }
   });
 
+  autoScanHUD = new AutoScanHUD(xrManager.getScanVisuals(), {
+    onFinishScan: () => {
+      const shell = xrManager.getScanController().getLatestShell();
+      if (!shell || !shell.valid || shell.cornersXZ.length < 3) {
+        uiManager.showToast('Keep scanning until walls are detected');
+        return;
+      }
+      xrManager.getRoomManager().loadFromAutoScan(shell.cornersXZ, shell.floorY, shell.ceilingY);
+      xrManager.setAutoScanActive(false);
+      syncModeUI();
+      uiManager.showToast(
+        shell.ceilingY !== null
+          ? '3D wireframe ready! Tap 2D Plan to fine-tune corners'
+          : 'Floor walls locked! Aim at wall top to pin ceiling height'
+      );
+    },
+    onExitToManual: () => {
+      xrManager.setAutoScanActive(false);
+      syncModeUI();
+      uiManager.showToast('Switched to manual measurement mode');
+    },
+    onResetScan: () => {
+      xrManager.getScanController().reset();
+    },
+    onTogglePause: () => {
+      const sc = xrManager.getScanController();
+      const next = !sc.isPaused();
+      sc.setPaused(next);
+      return next;
+    },
+    onToast: (msg) => {
+      uiManager.showToast(msg);
+    }
+  });
+
+  xrManager.getScanController().setOnUpdate((shell, stats) => {
+    if (xrManager.isAutoScanActive()) {
+      const unit = xrManager.getRoomManager().getUnitSystem();
+      xrManager.getScanController().setUnitSystem(unit);
+      autoScanHUD.update(shell, stats, unit);
+    }
+  });
+
   spikeOverlayUI = new SpikeOverlayUI(
     xrManager.getSensorSpikeProbe(),
     xrManager.getSpikeVisuals(),
     {
       onExitSpikeMode: () => {
         xrManager.setSpikeModeActive(false);
-        syncSpikeModeUI();
+        syncModeUI();
         uiManager.showToast('Switched to manual measurement mode');
       },
       onSwitchDepthPreference: async (nextPref) => {
@@ -294,7 +359,7 @@ function initApp(): void {
         uiManager.showToast(`Switching depth request to ${prefLabel}-first...`);
         try {
           await xrManager.switchDepthPreferenceLive(nextPref);
-          syncSpikeModeUI();
+          syncModeUI();
         } catch (err) {
           uiManager.showToast(`Depth switch failed: ${(err as Error).message}`);
         }
@@ -347,18 +412,38 @@ function initApp(): void {
   uiElements.btnStartAR.addEventListener('click', async () => {
     try {
       xrManager.setSpikeModeActive(false);
+      xrManager.setAutoScanActive(false);
       await xrManager.startARSession();
     } catch (err) {
       alert(`Could not start WebXR AR session: ${(err as Error).message}`);
     }
   });
 
+  btnStartAutoScan?.addEventListener('click', async () => {
+    xrManager.setSpikeModeActive(false);
+    xrManager.setAutoScanActive(true);
+    autoScanHUD.resetDisplay();
+    const arSupported = await XRManager.isARSupported();
+    if (arSupported) {
+      try {
+        await xrManager.startARSession();
+        return;
+      } catch (err) {
+        console.warn('[AutoScan] AR launch failed, falling back to simulator:', err);
+        uiManager.showToast(`AR failed (${(err as Error).message}), opening Simulator`);
+      }
+    }
+    xrManager.startSimulatorSession();
+  });
+
   uiElements.btnStartSim.addEventListener('click', () => {
     xrManager.setSpikeModeActive(false);
+    xrManager.setAutoScanActive(false);
     xrManager.startSimulatorSession();
   });
 
   btnStartSpike?.addEventListener('click', async () => {
+    xrManager.setAutoScanActive(false);
     xrManager.setSpikeModeActive(true);
     const arSupported = await XRManager.isARSupported();
     if (arSupported) {

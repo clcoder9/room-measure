@@ -7,6 +7,8 @@ import { MeasurementVisuals } from '../measurement/MeasurementVisuals';
 import { calculateAverageFloorHeight } from '../measurement/math';
 import { DepthPreference, SensorSpikeProbe } from '../spike/SensorSpikeProbe';
 import { SpikeVisuals } from '../spike/SpikeVisuals';
+import { ScanController } from '../scan/ScanController';
+import { ScanVisuals } from '../scan/ScanVisuals';
 
 export interface XRManagerOptions {
   container: HTMLElement;
@@ -37,12 +39,15 @@ export class XRManager {
   private depthExplorer: DepthExplorer;
   private sensorSpikeProbe: SensorSpikeProbe;
   private spikeVisuals: SpikeVisuals;
+  private scanVisuals: ScanVisuals;
+  private scanController: ScanController;
 
   private xrSession: XRSession | null = null;
   private xrRefSpace: XRReferenceSpace | null = null;
   private xrHitTestSource: XRHitTestSource | null = null;
   private depthPreference: DepthPreference = 'raw-first';
   private spikeModeActive = false;
+  private autoScanActive = false;
   private suppressSessionEndCallback = false;
 
   private isSimulatedMode = false;
@@ -124,6 +129,9 @@ export class XRManager {
     this.sensorSpikeProbe = new SensorSpikeProbe();
     this.spikeVisuals = new SpikeVisuals();
     this.scene.add(this.spikeVisuals);
+    this.scanVisuals = new ScanVisuals();
+    this.scene.add(this.scanVisuals);
+    this.scanController = new ScanController(this.scanVisuals);
 
     // Resize handling
     window.addEventListener('resize', this.onWindowResize.bind(this));
@@ -150,12 +158,43 @@ export class XRManager {
     return this.spikeVisuals;
   }
 
+  public getScanController(): ScanController {
+    return this.scanController;
+  }
+
+  public getScanVisuals(): ScanVisuals {
+    return this.scanVisuals;
+  }
+
+  public isAutoScanActive(): boolean {
+    return this.autoScanActive;
+  }
+
+  public setAutoScanActive(active: boolean): void {
+    this.autoScanActive = active;
+    if (active) {
+      this.spikeModeActive = false;
+      this.spikeVisuals.setActive(false, this.isSimulatedMode);
+      if (this.isSimulatedMode) {
+        this.spikeVisuals.setSimKitchenVisible(true);
+      }
+      this.scanController.start(this.isSimulatedMode);
+    } else {
+      this.scanController.stop();
+      this.spikeVisuals.setSimKitchenVisible(false);
+    }
+  }
+
   public isSpikeModeActive(): boolean {
     return this.spikeModeActive;
   }
 
   public setSpikeModeActive(active: boolean): void {
     this.spikeModeActive = active;
+    if (active) {
+      this.autoScanActive = false;
+      this.scanController.stop();
+    }
     this.spikeVisuals.setActive(active, this.isSimulatedMode);
     if (active && this.sensorSpikeProbe.getSessionInfo().mode === 'inactive') {
       if (this.xrSession) {
@@ -425,6 +464,11 @@ export class XRManager {
         negotiationAttempt
       });
       this.spikeVisuals.setActive(this.spikeModeActive, false);
+      if (this.autoScanActive) {
+        this.scanController.start(false);
+      } else {
+        this.scanController.stop();
+      }
       this.notifyStatus('AR active. Point camera at floor.');
 
       if (this.onSessionStarted) {
@@ -446,7 +490,8 @@ export class XRManager {
     this.isSimulatedMode = true;
     this.renderer.xr.enabled = false;
 
-    if (this.spikeModeActive) {
+    const useKitchenCam = this.spikeModeActive || this.autoScanActive;
+    if (useKitchenCam) {
       this.camera.position.set(0.2, 1.55, 1.2);
       this.camera.lookAt(0, 1.2, -1.8);
     } else {
@@ -464,7 +509,7 @@ export class XRManager {
     this.orbitControls.maxPolarAngle = Math.PI / 2 - 0.02;
     this.orbitControls.minDistance = 0.8;
     this.orbitControls.maxDistance = 18;
-    this.orbitControls.target.set(0, this.spikeModeActive ? 1.2 : 0, this.spikeModeActive ? -1.8 : 0);
+    this.orbitControls.target.set(0, useKitchenCam ? 1.2 : 0, useKitchenCam ? -1.8 : 0);
 
     this.sensorSpikeProbe.startSession({
       mode: 'desktop-simulator',
@@ -473,6 +518,12 @@ export class XRManager {
       negotiationAttempt: 1
     });
     this.spikeVisuals.setActive(this.spikeModeActive, true);
+    if (this.autoScanActive) {
+      this.spikeVisuals.setSimKitchenVisible(true);
+      this.scanController.start(true);
+    } else {
+      this.scanController.stop();
+    }
 
     this.notifyStatus('Simulator active. Left-click to pin, drag to orbit.');
 
@@ -640,6 +691,15 @@ export class XRManager {
       // Secondary: Probe WebXR Depth API on Pixel Pro hardware
       this.depthExplorer.probeFrame(frame, this.xrRefSpace, timestamp);
 
+      if (this.autoScanActive) {
+        this.scanController.onARFrame(
+          frame,
+          this.xrRefSpace,
+          this.renderer.xr.getCamera(),
+          timestamp
+        );
+      }
+
       if (this.spikeModeActive) {
         const camWorldPos = new THREE.Vector3();
         const camForward = new THREE.Vector3();
@@ -682,6 +742,10 @@ export class XRManager {
     const dt = (now - this.lastFrameTime) / 1000;
     this.lastFrameTime = now;
 
+    if (this.autoScanActive) {
+      this.scanController.updateSimulatorWalk(dt, this.camera, this.orbitControls);
+    }
+
     if (this.orbitControls) {
       this.orbitControls.update();
     }
@@ -699,6 +763,14 @@ export class XRManager {
       if (isSnapped && snap.effectiveReticlePos) {
         this.reticle.setWorldPose(snap.effectiveReticlePos);
       }
+    }
+
+    if (this.autoScanActive) {
+      this.scanController.onSimulatorFrame(
+        this.camera,
+        this.spikeVisuals.getSimulatorRoomMeshes(),
+        now
+      );
     }
 
     if (this.spikeModeActive) {
@@ -728,7 +800,7 @@ export class XRManager {
    * Triggered when user taps the screen in WebXR
    */
   private onXRSelect(): void {
-    if (this.spikeModeActive) return;
+    if (this.spikeModeActive || this.autoScanActive) return;
     if (this.isInteractionBlocked?.()) return;
     if (this.reticle.visible) {
       const pos = this.reticle.getWorldPositionTarget();
@@ -756,6 +828,7 @@ export class XRManager {
     this.reticle.visible = false;
     this.reticle.setSnapped(false);
     this.spikeVisuals.setActive(false, false);
+    this.scanController.stop();
     this.renderer.setAnimationLoop(null);
     this.notifyStatus('AR session ended.');
 
@@ -774,6 +847,7 @@ export class XRManager {
       this.reticle.visible = false;
       this.reticle.setSnapped(false);
       this.spikeVisuals.setActive(false, false);
+      this.scanController.stop();
       if (this.onSessionEnded) {
         this.onSessionEnded();
       }
@@ -786,6 +860,9 @@ export class XRManager {
   public async restartSession(): Promise<void> {
     this.roomManager.reset();
     this.depthExplorer.reset();
+    if (this.autoScanActive) {
+      this.scanController.reset();
+    }
     this.reticle.visible = false;
     this.reticle.setSnapped(false);
 
@@ -893,7 +970,7 @@ export class XRManager {
 
   private onPointerUpSim(e: PointerEvent): void {
     if (!this.isSimulatedMode) return;
-    if (this.spikeModeActive) return;
+    if (this.spikeModeActive || this.autoScanActive) return;
     if (this.isInteractionBlocked?.()) return;
     if (e.button !== 0 || this.simPointerDownPos.button !== 0) return;
 

@@ -386,6 +386,48 @@ export class RoomManager {
   }
 
   /**
+   * Loads a room shell polygon and floor/ceiling elevations detected by Auto Scan.
+   */
+  public loadFromAutoScan(
+    cornersXZ: [number, number][],
+    floorY: number,
+    ceilingY: number | null
+  ): boolean {
+    if (cornersXZ.length < 3) return false;
+
+    this.floorPoints = cornersXZ.map(([x, z]) => new THREE.Vector3(x, floorY, z));
+    this.isFloorClosed = true;
+    this.lastLiveDistance = 0;
+    this.liveSnapState = {
+      isSnappedToStart: false,
+      isOrthoSnapped: false,
+      liveAngleDeg: null,
+      effectiveReticlePos: null
+    };
+
+    if (ceilingY !== null && Math.abs(ceilingY - floorY) >= MIN_CEILING_HEIGHT_METERS) {
+      let cx = 0;
+      let cz = 0;
+      for (const p of this.floorPoints) {
+        cx += p.x;
+        cz += p.z;
+      }
+      cx /= this.floorPoints.length;
+      cz /= this.floorPoints.length;
+      this.ceilingPoint = new THREE.Vector3(cx, ceilingY, cz);
+      this.state = 'COMPLETED';
+    } else {
+      this.ceilingPoint = null;
+      this.state = 'MEASURING_CEILING';
+    }
+
+    this.triggerHaptic([30, 40, 30]);
+    this.syncVisuals();
+    this.notifyState();
+    return true;
+  }
+
+  /**
    * Action: Undo last placed point
    */
   public undo(): void {

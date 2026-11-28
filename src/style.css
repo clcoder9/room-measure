@@ -1518,3 +1518,134 @@ dialog::backdrop {
   border-color: var(--accent-cyan);
   color: var(--accent-cyan);
 }
+
+/* ============================================================
+   AUTO ROOM SCAN UI & STYLED <progress>
+   ============================================================ */
+.btn-autoscan-launch {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(0, 242, 254, 0.22) 100%);
+  color: var(--text-primary);
+  border: 1px solid rgba(0, 242, 254, 0.55);
+  box-shadow: 0 4px 14px rgba(0, 242, 254, 0.16);
+}
+
+.btn-autoscan-launch:active {
+  transform: scale(0.98);
+}
+
+.autoscan-panel {
+  background: var(--bg-surface);
+  border: 1px solid rgba(0, 242, 254, 0.45);
+  border-radius: var(--radius-lg);
+  padding: 0.75rem;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  pointer-events: auto;
+}
+
+.autoscan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.autoscan-title-group,
+.autoscan-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.autoscan-title {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--accent-cyan);
+}
+
+.autoscan-hint {
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  line-height: 1.35;
+}
+
+.autoscan-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem 0.65rem;
+  background: rgba(0, 0, 0, 0.38);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.autoscan-progress {
+  appearance: none;
+  border: 0 solid;
+  overflow: clip;
+  container-type: inline-size;
+  inline-size: 100%;
+  block-size: 8px;
+  --progress-bar-radius: 1e5px;
+  --progress-bar-track: rgba(15, 23, 42, 0.9);
+  --progress-bar-fill: linear-gradient(90deg, #00f2fe 0%, #10b981 100%);
+  --progress-bar-indeterminate-size: 30%;
+  --progress-bar-indeterminate-animation-duration: 1.5s;
+  border-radius: var(--progress-bar-radius);
+  background: var(--progress-bar-track);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .autoscan-progress {
+    --progress-bar-indeterminate-animation-duration: 10s;
+  }
+}
+
+.autoscan-progress:dir(rtl) {
+  --progress-bar-indeterminate-animation: progress-bar-indeterminate var(--progress-bar-indeterminate-animation-duration) infinite linear reverse;
+}
+
+.autoscan-progress:indeterminate {
+  --progress-bar-animation: var(
+    --progress-bar-indeterminate-animation,
+    progress-bar-indeterminate var(--progress-bar-indeterminate-animation-duration) infinite linear
+  );
+}
+
+.autoscan-progress::-webkit-progress-bar {
+  background: transparent;
+}
+
+.autoscan-progress::-webkit-progress-value {
+  background: var(--progress-bar-fill);
+  border-radius: var(--progress-bar-radius);
+  transition: inline-size 0.3s;
+  animation: var(--progress-bar-animation, revert-rule);
+}
+
+.autoscan-progress::-moz-progress-bar {
+  background: var(--progress-bar-fill);
+  border-radius: var(--progress-bar-radius);
+  transition: inline-size 0.3s;
+  animation: var(--progress-bar-animation, revert-rule);
+}
+
+@keyframes progress-bar-indeterminate {
+  from, to {
+    inline-size: var(--progress-bar-indeterminate-size);
+    margin-right: auto;
+  }
+  from {
+    translate: -100%;
+  }
+  to {
+    translate: 100cqi;
+  }
+}

@@ -7,6 +7,7 @@ import {
   formatDistance,
   formatArea
 } from '../measurement/math';
+import { ShellEstimate } from '../scan/ScanTypes';
 
 interface MapTransform {
   centerX: number;
@@ -418,6 +419,136 @@ export class MiniMap {
       ctx.font = 'bold 10px system-ui';
       ctx.textAlign = 'left';
       ctx.fillText(formatArea(area, unitSystem, false), 6, h - 8);
+    }
+  }
+
+  /**
+   * Render live Auto Scan 2D radar: walked camera trail, confidence-colored walls, and camera cone.
+   */
+  public renderAutoScan(
+    shell: ShellEstimate | null,
+    cameraPathXZ: Float32Array,
+    camera: THREE.Camera,
+    unitSystem: UnitSystem = 'metric'
+  ): void {
+    const ctx = this.ctx;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const camPos = new THREE.Vector3();
+    camera.getWorldPosition(camPos);
+
+    let minX = camPos.x;
+    let maxX = camPos.x;
+    let minZ = camPos.z;
+    let maxZ = camPos.z;
+
+    if (shell && shell.valid) {
+      for (const [x, z] of shell.cornersXZ) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+      }
+    }
+    for (let i = 0; i + 1 < cameraPathXZ.length; i += 2) {
+      const x = cameraPathXZ[i];
+      const z = cameraPathXZ[i + 1];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+
+    const span = Math.max(maxX - minX, maxZ - minZ, 3.0) * 1.3;
+    const centerX = (minX + maxX) * 0.5;
+    const centerZ = (minZ + maxZ) * 0.5;
+    const scale = Math.min(w, h) / span;
+    const toX = (wx: number) => w * 0.5 + (wx - centerX) * scale;
+    const toY = (wz: number) => h * 0.5 + (wz - centerZ) * scale;
+
+    // Subtle 1m radar grid
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.12)';
+    ctx.lineWidth = 1;
+    const g = scale;
+    if (g > 10) {
+      for (let x = (w * 0.5) % g; x < w; x += g) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      for (let y = (h * 0.5) % g; y < h; y += g) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+    }
+
+    // Walked camera path
+    if (cameraPathXZ.length >= 4) {
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.5)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(toX(cameraPathXZ[0]), toY(cameraPathXZ[1]));
+      for (let i = 2; i + 1 < cameraPathXZ.length; i += 2) {
+        ctx.lineTo(toX(cameraPathXZ[i]), toY(cameraPathXZ[i + 1]));
+      }
+      ctx.stroke();
+    }
+
+    // Detected shell fill + confidence-colored walls
+    if (shell && shell.valid && shell.cornersXZ.length >= 3) {
+      ctx.beginPath();
+      ctx.moveTo(toX(shell.cornersXZ[0][0]), toY(shell.cornersXZ[0][1]));
+      for (let i = 1; i < shell.cornersXZ.length; i++) {
+        ctx.lineTo(toX(shell.cornersXZ[i][0]), toY(shell.cornersXZ[i][1]));
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(0, 242, 254, 0.12)';
+      ctx.fill();
+
+      const wallColorMap = {
+        low: '#ef4444',
+        medium: '#f59e0b',
+        good: '#10b981'
+      };
+      ctx.lineWidth = this.isExpanded ? 3 : 2.5;
+      for (const wall of shell.walls) {
+        ctx.strokeStyle = wallColorMap[wall.confidence];
+        ctx.beginPath();
+        ctx.moveTo(toX(wall.p1[0]), toY(wall.p1[1]));
+        ctx.lineTo(toX(wall.p2[0]), toY(wall.p2[1]));
+        ctx.stroke();
+      }
+    }
+
+    // Camera cone
+    const camDir = new THREE.Vector3();
+    camera.getWorldDirection(camDir);
+    const yaw = Math.atan2(camDir.z, camDir.x);
+    ctx.save();
+    ctx.translate(toX(camPos.x), toY(camPos.z));
+    ctx.rotate(yaw);
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.28)';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, this.isExpanded ? 28 : 16, -Math.PI / 4, Math.PI / 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#38bdf8';
+    ctx.beginPath();
+    ctx.arc(0, 0, this.isExpanded ? 5 : 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    if (shell && shell.valid) {
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = 'bold 10px system-ui';
+      ctx.textAlign = 'left';
+      ctx.fillText(formatArea(shell.floorAreaSqM, unitSystem, false), 6, h - 8);
     }
   }
 }

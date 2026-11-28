@@ -718,6 +718,11 @@ export class SensorSpikeProbe {
     if (!depthInfo) {
       this.sessionInfo.depthActive = false;
       this.latestMetrics.centerDepthM = null;
+      this.latestMetrics.roiValidCount = 0;
+      this.latestMetrics.roiValidPct = 0;
+      this.latestMetrics.roiMeanDepthM = null;
+      this.latestMetrics.roiSpreadMinMaxCm = null;
+      this.latestMetrics.planeFit = null;
       return true;
     }
 
@@ -744,7 +749,7 @@ export class SensorSpikeProbe {
     this.latestMetrics.depthHz = this.recordDepthChecksum(now, checksum);
 
     const centerRaw = reader(0.5, 0.5);
-    const centerDepthM = centerRaw > 0.05 ? round3(centerRaw) : null;
+    const centerDepthM = centerRaw > 0.05 && centerRaw <= 8.0 ? round3(centerRaw) : null;
     this.latestMetrics.centerDepthM = centerDepthM;
     this.latestMetrics.temporalCenterStdCm = this.updateCenterHistory(centerDepthM);
 

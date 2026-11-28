@@ -4,6 +4,7 @@ import { DepthDiagnostics } from '../xr/DepthExplorer';
 import { formatDistance, formatArea, formatVolume } from '../measurement/math';
 import { MiniMap } from './MiniMap';
 import { SnapshotManager } from './SnapshotManager';
+import { ShellEstimate } from '../scan/ScanTypes';
 
 export interface UIElements {
   landingScreen: HTMLElement;
@@ -43,6 +44,7 @@ export interface UIElements {
   btnUnitToggle: HTMLButtonElement;
   btnOpenings: HTMLButtonElement;
   btnSpikeToggle?: HTMLButtonElement | null;
+  btnAutoScanToggle?: HTMLButtonElement | null;
   btnExport: HTMLButtonElement;
   exportModal: HTMLElement;
   modalCloseBtn: HTMLButtonElement;
@@ -65,10 +67,14 @@ export class UIManager {
   private lastCopyAnnouncement: string = '';
   private currentRoomNameDraft: string = 'Living Room';
 
+  private spikeUIMode = false;
+  private autoScanUIMode = false;
+
   private onPinRequested: () => void;
   private onExitRequested: () => void;
   private onRestartSessionRequested: () => Promise<void> | void;
   private onSpikeToggleRequested?: () => void;
+  private onAutoScanToggleRequested?: () => void;
   private onBeforeCopy?: (targetId: string) => void;
   private onLandingShown?: () => void;
   private btnOpenHelp: HTMLButtonElement | null;
@@ -83,6 +89,7 @@ export class UIManager {
       onExitRequested: () => void;
       onRestartSessionRequested: () => Promise<void> | void;
       onSpikeToggleRequested?: () => void;
+      onAutoScanToggleRequested?: () => void;
       onBeforeCopy?: (targetId: string) => void;
       onLandingShown?: () => void;
     }
@@ -93,6 +100,7 @@ export class UIManager {
     this.onExitRequested = callbacks.onExitRequested;
     this.onRestartSessionRequested = callbacks.onRestartSessionRequested;
     this.onSpikeToggleRequested = callbacks.onSpikeToggleRequested;
+    this.onAutoScanToggleRequested = callbacks.onAutoScanToggleRequested;
     this.onBeforeCopy = callbacks.onBeforeCopy;
     this.onLandingShown = callbacks.onLandingShown;
     this.btnOpenHelp =
@@ -462,6 +470,11 @@ export class UIManager {
       this.onSpikeToggleRequested?.();
     });
 
+    this.els.btnAutoScanToggle?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onAutoScanToggleRequested?.();
+    });
+
     this.els.btnModalRestart.addEventListener('click', (e) => {
       e.stopPropagation();
       this.closeExportModal();
@@ -545,10 +558,23 @@ export class UIManager {
   }
 
   public setSpikeUIMode(active: boolean): void {
-    this.els.hudBottom.classList.toggle('hidden', active);
-    this.els.instructionBanner.classList.toggle('hidden', active);
-    this.miniMap.setVisible(!active);
+    this.spikeUIMode = active;
     this.els.btnSpikeToggle?.setAttribute('aria-pressed', String(active));
+    this.syncOverlayPanels();
+  }
+
+  public setAutoScanUIMode(active: boolean): void {
+    this.autoScanUIMode = active;
+    this.els.btnAutoScanToggle?.setAttribute('aria-pressed', String(active));
+    this.syncOverlayPanels();
+  }
+
+  private syncOverlayPanels(): void {
+    const hideManual = this.spikeUIMode || this.autoScanUIMode;
+    this.els.hudBottom.classList.toggle('hidden', hideManual);
+    this.els.instructionBanner.classList.toggle('hidden', hideManual);
+    // MiniMap is hidden in Spike mode, visible in Manual and Auto Scan modes
+    this.miniMap.setVisible(!this.spikeUIMode);
   }
 
   public updateDepthDiagnostics(diag: DepthDiagnostics): void {
@@ -678,6 +704,19 @@ export class UIManager {
       camera,
       this.roomManager.getUnitSystem(),
       snap.isSnappedToStart || snap.isOrthoSnapped
+    );
+  }
+
+  public renderAutoScanMiniMap(
+    shell: ShellEstimate | null,
+    cameraPathXZ: Float32Array,
+    camera: THREE.Camera
+  ): void {
+    this.miniMap.renderAutoScan(
+      shell,
+      cameraPathXZ,
+      camera,
+      this.roomManager.getUnitSystem()
     );
   }
 

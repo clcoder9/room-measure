@@ -166,11 +166,24 @@ export class SpikeVisuals extends THREE.Group {
   public setActive(active: boolean, isSimulator: boolean): void {
     this.visible = active;
     this.simKitchenGroup.visible = active && isSimulator;
+    this.pointsMesh.visible = active && this.showPoints;
+    this.planesGroup.visible = active;
     if (!active) {
       this.pointsGeo.setDrawRange(0, 0);
       for (const loop of this.planePool) {
         loop.visible = false;
       }
+    }
+  }
+
+  public setSimKitchenVisible(visible: boolean): void {
+    if (visible) {
+      this.visible = true;
+      this.simKitchenGroup.visible = true;
+      this.pointsMesh.visible = false;
+      this.planesGroup.visible = false;
+    } else {
+      this.simKitchenGroup.visible = false;
     }
   }
 
