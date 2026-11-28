@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { UnitSystem, formatDistance } from '../measurement/math';
-import { ShellEstimate, WallConfidenceLevel } from './ScanTypes';
+import { FurnitureBox, ShellEstimate, WallConfidenceLevel, WallOpening } from './ScanTypes';
 
 const MAX_PREVIEW_POINTS = 1800;
 
@@ -26,6 +26,26 @@ export class ScanVisuals extends THREE.Group {
   private showPoints = true;
   private floorOutlineMat = new THREE.LineBasicMaterial({ color: 0x00f2fe, depthTest: false });
   private ceilingLockedMat = new THREE.LineBasicMaterial({ color: 0x00f2fe, depthTest: false });
+  private furnitureFillMat = new THREE.MeshBasicMaterial({
+    color: 0x10b981,
+    transparent: true,
+    opacity: 0.10,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  private furnitureLineMat = new THREE.LineBasicMaterial({
+    color: 0x34d399,
+    depthTest: false
+  });
+  private doorLineMat = new THREE.LineBasicMaterial({ color: 0xfbbf24, depthTest: false });
+  private windowLineMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, depthTest: false });
+  private openingFillMat = new THREE.MeshBasicMaterial({
+    color: 0xfbbf24,
+    transparent: true,
+    opacity: 0.14,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
   private wallFillMats: Record<WallConfidenceLevel, THREE.MeshBasicMaterial>;
   private wallLineMats: Record<WallConfidenceLevel, THREE.LineBasicMaterial>;
   private wallDashedMats: Record<WallConfidenceLevel, THREE.LineDashedMaterial>;
@@ -130,7 +150,12 @@ export class ScanVisuals extends THREE.Group {
     this.pointsGeo.setDrawRange(0, safeCount);
   }
 
-  public updateShell(shell: ShellEstimate | null, unitSystem: UnitSystem): void {
+  public updateShell(
+    shell: ShellEstimate | null,
+    unitSystem: UnitSystem,
+    furniture: FurnitureBox[] = [],
+    openings: WallOpening[] = []
+  ): void {
     this.clearWallsGroup();
     if (!shell || !shell.valid || shell.cornersXZ.length < 3) return;
 
@@ -202,6 +227,85 @@ export class ScanVisuals extends THREE.Group {
       const sprite = this.createLabelSprite(label, CONFIDENCE_CSS[w.confidence]);
       sprite.position.set(mx, my, mz);
       this.wallsGroup.add(sprite);
+    }
+
+    // Layer 2: Furniture silhouette boxes (rotation.y = -yawRad maps local +X/+Z to world u/v)
+    for (const box of furniture) {
+      const boxGeo = new THREE.BoxGeometry(box.widthMeters, box.heightMeters, box.depthMeters);
+      const boxMesh = new THREE.Mesh(boxGeo, this.furnitureFillMat);
+      boxMesh.position.set(box.centerXZ[0], floorY + box.heightMeters * 0.5, box.centerXZ[1]);
+      boxMesh.rotation.y = -box.yawRad;
+      this.wallsGroup.add(boxMesh);
+
+      const edgesGeo = new THREE.EdgesGeometry(boxGeo);
+      const wire = new THREE.LineSegments(edgesGeo, this.furnitureLineMat);
+      wire.position.copy(boxMesh.position);
+      wire.rotation.y = -box.yawRad;
+      this.wallsGroup.add(wire);
+
+      const dims = `${formatDistance(box.widthMeters, unitSystem)}×${formatDistance(box.depthMeters, unitSystem)}×${formatDistance(box.heightMeters, unitSystem)}`;
+      const fSprite = this.createLabelSprite(`${box.label} ${dims}`, '#34d399');
+      fSprite.scale.set(0.52, 0.115, 1);
+      fSprite.position.set(box.centerXZ[0], floorY + box.heightMeters + 0.12, box.centerXZ[1]);
+      this.wallsGroup.add(fSprite);
+    }
+
+    // Layer 3: Auto-detected doors & windows anchored onto detected walls
+    for (const op of openings) {
+      if (op.wallIndex === undefined || op.offsetAlongWallMeters === undefined) continue;
+      const wall = shell.walls[op.wallIndex];
+      if (!wall) continue;
+
+      const dx = wall.p2[0] - wall.p1[0];
+      const dz = wall.p2[1] - wall.p1[1];
+      const wLen = Math.hypot(dx, dz);
+      if (wLen < 0.05) continue;
+      const tx = dx / wLen;
+      const tz = dz / wLen;
+
+      const s0 = Math.max(0, Math.min(wLen, op.offsetAlongWallMeters));
+      const s1 = Math.max(s0 + 0.05, Math.min(wLen, s0 + op.widthMeters));
+      const sill = op.sillHeightMeters ?? 0;
+      const y0 = floorY + sill;
+      const y1 = y0 + op.heightMeters;
+      const offX = wall.normal[0] * 0.03;
+      const offZ = wall.normal[1] * 0.03;
+
+      const ax = wall.p1[0] + tx * s0 + offX;
+      const az = wall.p1[1] + tz * s0 + offZ;
+      const bx = wall.p1[0] + tx * s1 + offX;
+      const bz = wall.p1[1] + tz * s1 + offZ;
+
+      const quadGeo = new THREE.BufferGeometry();
+      quadGeo.setAttribute(
+        'position',
+        new THREE.BufferAttribute(
+          new Float32Array([ax, y0, az, bx, y0, bz, bx, y1, bz, ax, y0, az, bx, y1, bz, ax, y1, az]),
+          3
+        )
+      );
+      this.wallsGroup.add(new THREE.Mesh(quadGeo, this.openingFillMat));
+
+      const frameGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(ax, y0, az),
+        new THREE.Vector3(bx, y0, bz),
+        new THREE.Vector3(bx, y0, bz),
+        new THREE.Vector3(bx, y1, bz),
+        new THREE.Vector3(bx, y1, bz),
+        new THREE.Vector3(ax, y1, az),
+        new THREE.Vector3(ax, y1, az),
+        new THREE.Vector3(ax, y0, az)
+      ]);
+      const mat = op.type === 'door' ? this.doorLineMat : this.windowLineMat;
+      this.wallsGroup.add(new THREE.LineSegments(frameGeo, mat));
+
+      const opSprite = this.createLabelSprite(
+        `${op.type === 'door' ? '🚪' : '🪟'} ${formatDistance(op.widthMeters, unitSystem)}×${formatDistance(op.heightMeters, unitSystem)}`,
+        op.type === 'door' ? '#fbbf24' : '#38bdf8'
+      );
+      opSprite.scale.set(0.46, 0.105, 1);
+      opSprite.position.set((ax + bx) * 0.5 + wall.normal[0] * 0.08, (y0 + y1) * 0.5, (az + bz) * 0.5 + wall.normal[1] * 0.08);
+      this.wallsGroup.add(opSprite);
     }
   }
 

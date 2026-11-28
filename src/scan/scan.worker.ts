@@ -1,6 +1,8 @@
 import { WorkerInMessage, WorkerOutMessage } from './ScanTypes';
 import { VoxelGrid } from './VoxelGrid';
 import { ShellEstimator } from './ShellEstimator';
+import { FurnitureDetector } from './FurnitureDetector';
+import { OpeningDetector } from './OpeningDetector';
 
 const ctx = self as unknown as {
   onmessage: ((e: MessageEvent<WorkerInMessage>) => void) | null;
@@ -28,6 +30,8 @@ ctx.onmessage = (e: MessageEvent<WorkerInMessage>) => {
     lastEstimateAt = now;
 
     const { shell, stats } = ShellEstimator.estimateShell(grid);
+    const furniture = FurnitureDetector.detectFurniture(grid, shell);
+    const openings = OpeningDetector.detectOpenings(grid, shell);
     const cloud = grid.exportPreviewPointCloud(1800, shell.floorY, shell.ceilingY);
     const previewPositions = cloud.positions.slice();
     const previewColors = cloud.colors.slice();
@@ -37,6 +41,8 @@ ctx.onmessage = (e: MessageEvent<WorkerInMessage>) => {
       type: 'SCAN_UPDATE',
       shell,
       stats,
+      furniture,
+      openings,
       previewPositions,
       previewColors,
       previewCount: cloud.count,

@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { RoomManager, RoomMetrics } from '../measurement/RoomManager';
 import { DepthDiagnostics } from '../xr/DepthExplorer';
-import { formatDistance, formatArea, formatVolume } from '../measurement/math';
+import { formatDistance, formatArea, formatVolume, calculateHorizontalDistance } from '../measurement/math';
 import { MiniMap } from './MiniMap';
 import { SnapshotManager } from './SnapshotManager';
-import { ShellEstimate } from '../scan/ScanTypes';
+import { FurnitureBox, ShellEstimate, WallOpening } from '../scan/ScanTypes';
 
 export interface UIElements {
   landingScreen: HTMLElement;
@@ -110,9 +110,15 @@ export class UIManager {
     this.helpCloseBtn =
       els.helpCloseBtn ?? (document.getElementById('help-close-btn') as HTMLButtonElement | null);
 
-    this.miniMap = new MiniMap(this.els.arOverlay, (index, wx, wz) => {
-      this.roomManager.updateFloorPoint(index, wx, wz);
-    });
+    this.miniMap = new MiniMap(
+      this.els.arOverlay,
+      (index, wx, wz) => {
+        this.roomManager.updateFloorPoint(index, wx, wz);
+      },
+      (id, wx, wz) => {
+        this.roomManager.updateFurniture(id, { centerXZ: [wx, wz], source: 'manual' });
+      }
+    );
 
     this.syncToggleButtons();
     this.initToolbarFocusFallback();
@@ -413,7 +419,7 @@ export class UIManager {
 
     this.els.btnPinPoint.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (this.roomManager.getState() === 'COMPLETED') {
+      if (!this.roomManager.isMarkingOpening() && this.roomManager.getState() === 'COMPLETED') {
         this.roomManager.reset();
         this.showToast('Starting new room measurement');
       } else {
@@ -423,7 +429,12 @@ export class UIManager {
 
     this.els.btnCloseFloor.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.roomManager.closeFloor();
+      if (this.roomManager.isMarkingOpening()) {
+        this.roomManager.cancelMarkingOpening();
+        this.showToast('Cancelled opening mark');
+      } else {
+        this.roomManager.closeFloor();
+      }
     });
 
     this.els.btnUndo.addEventListener('click', (e) => {
@@ -591,69 +602,84 @@ export class UIManager {
   }
 
   public renderMetrics(metrics: RoomMetrics): void {
-    switch (metrics.state) {
-      case 'SCAN_FLOOR':
-        this.els.statusBadge.textContent = 'Scan Floor';
-        this.els.statusBadge.className = 'status-pill state-scan';
-        this.els.instructionText.textContent =
-          'Point camera at floor and move slowly to detect plane. Tap screen or "Pin Corner" to place point #1.';
-        this.els.btnPinPoint.textContent = '📍 Pin Corner #1';
-        this.els.btnPinPoint.className = 'btn-hud btn-hud-primary';
-        this.els.btnCloseFloor.disabled = true;
-        this.els.btnUndo.setAttribute('aria-disabled', 'true');
-        break;
-
-      case 'MEASURING_FLOOR': {
-        this.els.statusBadge.textContent = `Floor (${metrics.pointCount} corners)`;
-        this.els.statusBadge.className = 'status-pill state-measuring';
-        this.els.btnCloseFloor.disabled = metrics.pointCount < 3;
-        this.els.btnUndo.setAttribute('aria-disabled', 'false');
-
-        if (metrics.isSnappedToStart && metrics.pointCount >= 3) {
+    if (this.roomManager.isMarkingOpening()) {
+      const mark = this.roomManager.getOpeningMarkState();
+      this.els.statusBadge.textContent = mark.firstHit ? 'Mark Corner #2' : 'Mark Corner #1';
+      this.els.statusBadge.className = 'status-pill state-ceiling';
+      this.els.instructionText.textContent = mark.firstHit
+        ? `Aim at opposite corner of ${mark.type} on Wall #${mark.firstHit.wallIndex + 1}, then tap.`
+        : `Aim at first corner of ${mark.type} on any wall, then tap screen or button.`;
+      this.els.btnPinPoint.textContent = mark.firstHit ? '🎯 Pin Corner #2' : '🎯 Pin Corner #1';
+      this.els.btnPinPoint.className = 'btn-hud btn-hud-snap';
+      this.els.btnCloseFloor.textContent = '✕ Cancel Mark';
+      this.els.btnCloseFloor.disabled = false;
+      this.els.btnUndo.setAttribute('aria-disabled', 'false');
+    } else {
+      this.els.btnCloseFloor.textContent = '📐 Close Floor';
+      switch (metrics.state) {
+        case 'SCAN_FLOOR':
+          this.els.statusBadge.textContent = 'Scan Floor';
+          this.els.statusBadge.className = 'status-pill state-scan';
           this.els.instructionText.textContent =
-            'Snap locked to Corner #1! Tap screen or "Close Polygon" to complete floor.';
-          this.els.btnPinPoint.textContent = '📐 Close Polygon (#1)';
-          this.els.btnPinPoint.className = 'btn-hud btn-hud-snap';
-        } else if (metrics.isOrthoSnapped && metrics.liveAngleDeg !== null) {
-          this.els.instructionText.textContent =
-            metrics.pointCount < 3
-              ? `Ortho snap (${Math.round(metrics.liveAngleDeg)}°) active. Tap to pin corner #${metrics.pointCount + 1}.`
-              : `Ortho snap (${Math.round(metrics.liveAngleDeg)}°) active. Pin corner #${metrics.pointCount + 1} or close floor.`;
-          this.els.btnPinPoint.textContent = `📍 Pin Corner #${metrics.pointCount + 1} (${Math.round(metrics.liveAngleDeg)}°)`;
-          this.els.btnPinPoint.className = 'btn-hud btn-hud-snap';
-        } else {
-          this.els.instructionText.textContent =
-            metrics.pointCount < 3
-              ? `Pin corner #${metrics.pointCount + 1}. At least 3 corners required to form floor polygon.`
-              : `Pin next corner or tap "Close Floor" once perimeter is complete.`;
-          this.els.btnPinPoint.textContent = `📍 Pin Corner #${metrics.pointCount + 1}`;
+            'Point camera at floor and move slowly to detect plane. Tap screen or "Pin Corner" to place point #1.';
+          this.els.btnPinPoint.textContent = '📍 Pin Corner #1';
           this.els.btnPinPoint.className = 'btn-hud btn-hud-primary';
+          this.els.btnCloseFloor.disabled = true;
+          this.els.btnUndo.setAttribute('aria-disabled', 'true');
+          break;
+
+        case 'MEASURING_FLOOR': {
+          this.els.statusBadge.textContent = `Floor (${metrics.pointCount} corners)`;
+          this.els.statusBadge.className = 'status-pill state-measuring';
+          this.els.btnCloseFloor.disabled = metrics.pointCount < 3;
+          this.els.btnUndo.setAttribute('aria-disabled', 'false');
+
+          if (metrics.isSnappedToStart && metrics.pointCount >= 3) {
+            this.els.instructionText.textContent =
+              'Snap locked to Corner #1! Tap screen or "Close Polygon" to complete floor.';
+            this.els.btnPinPoint.textContent = '📐 Close Polygon (#1)';
+            this.els.btnPinPoint.className = 'btn-hud btn-hud-snap';
+          } else if (metrics.isOrthoSnapped && metrics.liveAngleDeg !== null) {
+            this.els.instructionText.textContent =
+              metrics.pointCount < 3
+                ? `Ortho snap (${Math.round(metrics.liveAngleDeg)}°) active. Tap to pin corner #${metrics.pointCount + 1}.`
+                : `Ortho snap (${Math.round(metrics.liveAngleDeg)}°) active. Pin corner #${metrics.pointCount + 1} or close floor.`;
+            this.els.btnPinPoint.textContent = `📍 Pin Corner #${metrics.pointCount + 1} (${Math.round(metrics.liveAngleDeg)}°)`;
+            this.els.btnPinPoint.className = 'btn-hud btn-hud-snap';
+          } else {
+            this.els.instructionText.textContent =
+              metrics.pointCount < 3
+                ? `Pin corner #${metrics.pointCount + 1}. At least 3 corners required to form floor polygon.`
+                : `Pin next corner or tap "Close Floor" once perimeter is complete.`;
+            this.els.btnPinPoint.textContent = `📍 Pin Corner #${metrics.pointCount + 1}`;
+            this.els.btnPinPoint.className = 'btn-hud btn-hud-primary';
+          }
+          break;
         }
-        break;
+
+        case 'FLOOR_CLOSED':
+        case 'MEASURING_CEILING':
+          this.els.statusBadge.textContent = 'Pin Ceiling';
+          this.els.statusBadge.className = 'status-pill state-ceiling';
+          this.els.instructionText.textContent =
+            'Aim reticle at ceiling or top of any wall directly above floor, then tap "Pin Ceiling".';
+          this.els.btnPinPoint.textContent = '📍 Pin Ceiling Point';
+          this.els.btnPinPoint.className = 'btn-hud btn-hud-primary';
+          this.els.btnCloseFloor.disabled = true;
+          this.els.btnUndo.setAttribute('aria-disabled', 'false');
+          break;
+
+        case 'COMPLETED':
+          this.els.statusBadge.textContent = 'Complete';
+          this.els.statusBadge.className = 'status-pill state-complete';
+          this.els.instructionText.textContent =
+            'Room complete! Inspect 3D wireframe, drag corners/furniture in 2D Plan, or Edit Model.';
+          this.els.btnPinPoint.textContent = '🔄 Start New Room';
+          this.els.btnPinPoint.className = 'btn-hud btn-hud-restart';
+          this.els.btnCloseFloor.disabled = true;
+          this.els.btnUndo.setAttribute('aria-disabled', 'false');
+          break;
       }
-
-      case 'FLOOR_CLOSED':
-      case 'MEASURING_CEILING':
-        this.els.statusBadge.textContent = 'Pin Ceiling';
-        this.els.statusBadge.className = 'status-pill state-ceiling';
-        this.els.instructionText.textContent =
-          'Aim reticle at ceiling or top of any wall directly above floor, then tap "Pin Ceiling".';
-        this.els.btnPinPoint.textContent = '📍 Pin Ceiling Point';
-        this.els.btnPinPoint.className = 'btn-hud btn-hud-primary';
-        this.els.btnCloseFloor.disabled = true;
-        this.els.btnUndo.setAttribute('aria-disabled', 'false');
-        break;
-
-      case 'COMPLETED':
-        this.els.statusBadge.textContent = 'Complete';
-        this.els.statusBadge.className = 'status-pill state-complete';
-        this.els.instructionText.textContent =
-          'Room complete! Inspect 3D volume, drag corners in 2D Plan, add Openings, or Export.';
-        this.els.btnPinPoint.textContent = '🔄 Start New Room';
-        this.els.btnPinPoint.className = 'btn-hud btn-hud-restart';
-        this.els.btnCloseFloor.disabled = true;
-        this.els.btnUndo.setAttribute('aria-disabled', 'false');
-        break;
     }
 
     const unit = metrics.unitSystem;
@@ -671,18 +697,27 @@ export class UIManager {
 
     const openingsLabelSpan = this.els.btnOpenings.querySelector('span:last-child');
     if (openingsLabelSpan) {
+      const totalItems = metrics.openingsCount + metrics.furnitureCount;
       openingsLabelSpan.textContent =
-        metrics.openingsCount > 0 ? `Openings (${metrics.openingsCount})` : 'Openings';
+        totalItems > 0 ? `Edit (${totalItems})` : 'Edit Model';
     }
 
+    const parts: string[] = [];
+    if (metrics.furnitureCount > 0 && metrics.floorArea > 0) {
+      parts.push(`Free Floor: ${formatArea(metrics.freeFloorArea, unit, false)} (${metrics.furnitureCount} furn)`);
+    }
     if (metrics.grossWallArea > 0) {
-      this.els.wallAreaSummary.textContent =
+      parts.push(
         metrics.openingsCount > 0
-          ? `Gross Wall: ${formatArea(metrics.grossWallArea, unit, false)} • Openings (${metrics.openingsCount}): -${formatArea(metrics.openingsArea, unit, false)} • Net: ${formatArea(metrics.netWallArea, unit, false)}`
-          : `Gross Wall: ${formatArea(metrics.grossWallArea, unit, false)} • Net Wall: ${formatArea(metrics.netWallArea, unit, false)}`;
-      this.els.wallAreaSummary.classList.remove('hidden');
+          ? `Net Wall: ${formatArea(metrics.netWallArea, unit, false)} (-${metrics.openingsCount} open)`
+          : `Gross Wall: ${formatArea(metrics.grossWallArea, unit, false)}`
+      );
     } else if (metrics.openingsCount > 0) {
-      this.els.wallAreaSummary.textContent = `Openings (${metrics.openingsCount}): -${formatArea(metrics.openingsArea, unit, false)} queued (pin ceiling for Net Wall Area)`;
+      parts.push(`Openings (${metrics.openingsCount}): -${formatArea(metrics.openingsArea, unit, false)}`);
+    }
+
+    if (parts.length > 0) {
+      this.els.wallAreaSummary.textContent = parts.join(' • ');
       this.els.wallAreaSummary.classList.remove('hidden');
     } else {
       this.els.wallAreaSummary.classList.add('hidden');
@@ -693,7 +728,9 @@ export class UIManager {
     floorPoints: THREE.Vector3[],
     isClosed: boolean,
     reticlePos: THREE.Vector3 | null,
-    camera: THREE.Camera
+    camera: THREE.Camera,
+    furniture: FurnitureBox[] = [],
+    openings: WallOpening[] = []
   ): void {
     const snap = this.roomManager.getLiveSnapState();
     const effectiveReticle = snap.effectiveReticlePos ?? reticlePos;
@@ -703,20 +740,26 @@ export class UIManager {
       effectiveReticle,
       camera,
       this.roomManager.getUnitSystem(),
-      snap.isSnappedToStart || snap.isOrthoSnapped
+      snap.isSnappedToStart || snap.isOrthoSnapped,
+      furniture,
+      openings
     );
   }
 
   public renderAutoScanMiniMap(
     shell: ShellEstimate | null,
     cameraPathXZ: Float32Array,
-    camera: THREE.Camera
+    camera: THREE.Camera,
+    furniture: FurnitureBox[] = [],
+    openings: WallOpening[] = []
   ): void {
     this.miniMap.renderAutoScan(
       shell,
       cameraPathXZ,
       camera,
-      this.roomManager.getUnitSystem()
+      this.roomManager.getUnitSystem(),
+      furniture,
+      openings
     );
   }
 
@@ -736,14 +779,20 @@ export class UIManager {
     const data = this.roomManager.getExportData();
     const unit = this.roomManager.getUnitSystem();
     const savedRooms = this.roomManager.getSavedRooms();
+    const floorPts = this.roomManager.getFloorPoints();
+    const isClosed = this.roomManager.isClosed() && floorPts.length >= 3;
     this.els.summaryReportPre.textContent = this.roomManager.getFormattedSummaryText();
 
     const totalSavedArea = savedRooms.reduce((acc, r) => acc + r.metrics.floorAreaSqMeters, 0);
     const totalSavedVol = savedRooms.reduce((acc, r) => acc + r.metrics.roomVolumeCuMeters, 0);
     const isImperial = unit === 'imperial';
     const unitShort = isImperial ? 'ft' : 'm';
+    const mToUnit = isImperial ? 1 / 0.3048 : 1;
     const defaultW = isImperial ? '3.0' : '0.9';
     const defaultH = isImperial ? '6.9' : '2.1';
+    const furnDefW = isImperial ? '4.0' : '1.2';
+    const furnDefD = isImperial ? '2.0' : '0.6';
+    const furnDefH = isImperial ? '3.0' : '0.9';
     const openingsSubBadge =
       data.metrics.openingsAreaSqMeters > 0
         ? ` • -${formatArea(data.metrics.openingsAreaSqMeters, unit, false)}`
@@ -753,23 +802,33 @@ export class UIManager {
         ? '<span style="font-size:0.68rem; color:#94a3b8; margin-top:0.2rem;">Pin ceiling height to compute Net Wall Area</span>'
         : '';
 
+    const wallOptionsHtml = isClosed
+      ? floorPts
+          .map((p1, idx) => {
+            const p2 = floorPts[(idx + 1) % floorPts.length];
+            const len = calculateHorizontalDistance(p1, p2);
+            return `<option value="${idx}">Wall #${idx + 1} (${formatDistance(len, unit)})</option>`;
+          })
+          .join('')
+      : '';
+
     this.els.modalContent.innerHTML = `
       <div class="summary-grid">
         <div class="summary-item">
-          <span class="label">Floor Area</span>
+          <span class="label">Floor Area (Shell)</span>
           <span class="val highlight">${data.metrics.formatted.floorArea}</span>
         </div>
         <div class="summary-item">
-          <span class="label">Room Volume</span>
-          <span class="val highlight">${data.metrics.formatted.roomVolume}</span>
+          <span class="label">Free Floor Area (${data.furniture.length} furn)</span>
+          <span class="val highlight">${data.metrics.formatted.freeFloorArea}</span>
         </div>
         <div class="summary-item">
           <span class="label">Ceiling Height</span>
           <span class="val">${data.metrics.formatted.ceilingHeight}</span>
         </div>
         <div class="summary-item">
-          <span class="label">Floor Perimeter</span>
-          <span class="val">${data.metrics.formatted.floorPerimeter}</span>
+          <span class="label">Room Volume</span>
+          <span class="val">${data.metrics.formatted.roomVolume}</span>
         </div>
         <div class="summary-item">
           <span class="label">Gross Wall Area</span>
@@ -785,32 +844,133 @@ export class UIManager {
       <section id="modal-openings-section" class="modal-section">
         <div class="modal-section-title">Doors &amp; Windows (${data.openings.length}${openingsSubBadge})</div>
         <div class="preset-row">
+          <button type="button" class="btn-chip btn-chip-mark" data-start-mark="door" ${isClosed ? '' : 'disabled title="Close room perimeter first"'}>🎯 Mark Door on Wall (2 Taps)</button>
+          <button type="button" class="btn-chip btn-chip-mark" data-start-mark="window" ${isClosed ? '' : 'disabled title="Close room perimeter first"'}>🎯 Mark Window on Wall (2 Taps)</button>
+        </div>
+        <div class="preset-row">
           <button type="button" class="btn-chip" data-preset-opening="door:0.9:2.1:Standard Door">+ Standard Door (${formatDistance(0.9, unit)} × ${formatDistance(2.1, unit)})</button>
           <button type="button" class="btn-chip" data-preset-opening="door:1.6:2.1:Double Door">+ Double Door (${formatDistance(1.6, unit)} × ${formatDistance(2.1, unit)})</button>
           <button type="button" class="btn-chip" data-preset-opening="window:1.2:1.2:Window">+ Window (${formatDistance(1.2, unit)} × ${formatDistance(1.2, unit)})</button>
           <button type="button" class="btn-chip" data-preset-opening="window:1.8:1.5:Large Window">+ Large Window (${formatDistance(1.8, unit)} × ${formatDistance(1.5, unit)})</button>
         </div>
-        <div class="custom-opening-form">
-          <select id="custom-opening-type" class="modal-input" aria-label="Opening type">
-            <option value="door">Door</option>
-            <option value="window">Window</option>
-          </select>
-          <input id="custom-opening-w" class="modal-input" type="number" step="0.05" min="0.1" value="${defaultW}" aria-label="Width in ${isImperial ? 'feet' : 'meters'}" placeholder="Width (${unitShort})" />
-          <input id="custom-opening-h" class="modal-input" type="number" step="0.05" min="0.1" value="${defaultH}" aria-label="Height in ${isImperial ? 'feet' : 'meters'}" placeholder="Height (${unitShort})" />
-          <button type="button" id="btn-add-custom-opening" class="btn-mini">+ Add (${unitShort})</button>
-        </div>
+        <form id="form-add-opening" class="custom-opening-form" novalidate aria-labelledby="modal-openings-section">
+          <fieldset class="opening-type-fieldset">
+            <legend>Opening Type</legend>
+            <div class="radio-inline-group">
+              <label class="radio-pill" for="op-type-door"><input type="radio" id="op-type-door" name="openingType" value="door" checked /><span>Door</span></label>
+              <label class="radio-pill" for="op-type-window"><input type="radio" id="op-type-window" name="openingType" value="window" /><span>Window</span></label>
+            </div>
+          </fieldset>
+          <div class="form-fields-row">
+            ${
+              isClosed
+                ? `<div class="form-field"><label for="custom-opening-wall">Wall</label><select id="custom-opening-wall" name="wallIndex" class="modal-input"><option value="">Area Only</option>${wallOptionsHtml}</select></div>`
+                : ''
+            }
+            <div class="form-field">
+              <label for="custom-opening-w">Width (${unitShort})</label>
+              <input id="custom-opening-w" name="width" class="modal-input" type="number" inputmode="decimal" step="0.05" min="0.1" value="${defaultW}" required />
+            </div>
+            <div class="form-field">
+              <label for="custom-opening-h">Height (${unitShort})</label>
+              <input id="custom-opening-h" name="height" class="modal-input" type="number" inputmode="decimal" step="0.05" min="0.1" value="${defaultH}" required />
+            </div>
+            <div class="form-field">
+              <label for="custom-opening-sill">Sill (${unitShort})</label>
+              <input id="custom-opening-sill" name="sill" class="modal-input" type="number" inputmode="decimal" step="0.05" min="0" value="0" />
+            </div>
+          </div>
+          <button type="submit" id="btn-add-custom-opening" class="btn-mini">+ Add Opening (${unitShort})</button>
+          <p id="opening-form-error" class="form-error-msg" role="alert"></p>
+        </form>
         <div class="list-stack">
           ${
             data.openings.length === 0
-              ? '<div class="list-item-row" style="color:#94a3b8;">No doors or windows subtracted yet.</div>'
+              ? '<div class="list-item-row" style="color:#94a3b8;">No doors or windows detected or added yet.</div>'
               : data.openings
-                  .map(
-                    (op) => `
+                  .map((op) => {
+                    const sourceBadge = op.source === 'auto' ? '<span class="auto-badge">Auto</span>' : '';
+                    const wallInfo = op.wallIndex !== undefined ? ` • Wall #${op.wallIndex + 1}` : '';
+                    const sillInfo =
+                      op.sillHeightMeters && op.sillHeightMeters > 0.01
+                        ? ` • sill ${formatDistance(op.sillHeightMeters, unit)}`
+                        : '';
+                    const wDisp = (op.widthMeters * mToUnit).toFixed(2);
+                    const hDisp = (op.heightMeters * mToUnit).toFixed(2);
+                    return `
               <div class="list-item-row">
-                <span>${op.type === 'door' ? '🚪' : '🪟'} ${this.escapeHtml(op.label)} (${formatDistance(op.widthMeters, unit)} × ${formatDistance(op.heightMeters, unit)})</span>
-                <button type="button" class="btn-mini btn-mini-danger" data-remove-opening="${this.escapeHtml(op.id)}">Remove</button>
-              </div>`
-                  )
+                <div class="list-item-main">
+                  <span>${op.type === 'door' ? '🚪' : '🪟'} ${this.escapeHtml(op.label)} ${sourceBadge}</span>
+                  <span class="list-item-sub">${this.escapeHtml(`${wallInfo}${sillInfo}`.replace(/^ • /, ''))}</span>
+                </div>
+                <div class="list-item-actions">
+                  <input type="number" step="0.05" min="0.1" class="inline-dim-input" value="${wDisp}" aria-label="Edit opening width in ${unitShort}" data-edit-op-w="${this.escapeHtml(op.id)}" />
+                  <span class="dim-x">×</span>
+                  <input type="number" step="0.05" min="0.1" class="inline-dim-input" value="${hDisp}" aria-label="Edit opening height in ${unitShort}" data-edit-op-h="${this.escapeHtml(op.id)}" />
+                  <button type="button" class="btn-mini btn-mini-danger" data-remove-opening="${this.escapeHtml(op.id)}">Remove</button>
+                </div>
+              </div>`;
+                  })
+                  .join('')
+          }
+        </div>
+      </section>
+
+      <section id="modal-furniture-section" class="modal-section">
+        <div class="modal-section-title">Furniture Silhouettes (${data.furniture.length})</div>
+        <div class="preset-row">
+          <button type="button" class="btn-chip" data-preset-furn="Counter:1.8:0.6:0.9">+ Counter (${formatDistance(1.8, unit)}×${formatDistance(0.6, unit)})</button>
+          <button type="button" class="btn-chip" data-preset-furn="Fridge:0.7:0.7:1.85">+ Fridge (${formatDistance(0.7, unit)}×${formatDistance(0.7, unit)})</button>
+          <button type="button" class="btn-chip" data-preset-furn="Table:1.4:0.8:0.75">+ Table (${formatDistance(1.4, unit)}×${formatDistance(0.8, unit)})</button>
+          <button type="button" class="btn-chip" data-preset-furn="Bed:2.0:1.6:0.55">+ Bed (${formatDistance(2.0, unit)}×${formatDistance(1.6, unit)})</button>
+        </div>
+        <form id="form-add-furniture" class="custom-opening-form" novalidate aria-labelledby="modal-furniture-section">
+          <div class="form-fields-row">
+            <div class="form-field">
+              <label for="furn-label">Label</label>
+              <input id="furn-label" name="label" class="modal-input" type="text" value="Cabinet" required maxlength="32" />
+            </div>
+            <div class="form-field">
+              <label for="furn-w">W (${unitShort})</label>
+              <input id="furn-w" name="width" class="modal-input" type="number" inputmode="decimal" step="0.05" min="0.15" value="${furnDefW}" required />
+            </div>
+            <div class="form-field">
+              <label for="furn-d">D (${unitShort})</label>
+              <input id="furn-d" name="depth" class="modal-input" type="number" inputmode="decimal" step="0.05" min="0.15" value="${furnDefD}" required />
+            </div>
+            <div class="form-field">
+              <label for="furn-h">H (${unitShort})</label>
+              <input id="furn-h" name="height" class="modal-input" type="number" inputmode="decimal" step="0.05" min="0.15" value="${furnDefH}" required />
+            </div>
+          </div>
+          <button type="submit" class="btn-mini">+ Add Furniture Box (${unitShort})</button>
+          <p id="furn-form-error" class="form-error-msg" role="alert"></p>
+        </form>
+        <div class="list-stack">
+          ${
+            data.furniture.length === 0
+              ? '<div class="list-item-row" style="color:#94a3b8;">No furniture silhouettes yet. Tap 2D Plan to drag boxes once added.</div>'
+              : data.furniture
+                  .map((f) => {
+                    const sourceBadge = f.source === 'auto' ? '<span class="auto-badge">Auto</span>' : '';
+                    const wDisp = (f.widthMeters * mToUnit).toFixed(2);
+                    const dDisp = (f.depthMeters * mToUnit).toFixed(2);
+                    const hDisp = (f.heightMeters * mToUnit).toFixed(2);
+                    return `
+              <div class="list-item-row">
+                <div class="list-item-main">
+                  <span>🪑 ${this.escapeHtml(f.label)} ${sourceBadge}</span>
+                  <span class="list-item-sub">${formatDistance(f.widthMeters, unit)} × ${formatDistance(f.depthMeters, unit)} × ${formatDistance(f.heightMeters, unit)}</span>
+                </div>
+                <div class="list-item-actions">
+                  <input type="number" step="0.05" min="0.15" class="inline-dim-input" value="${wDisp}" aria-label="Width in ${unitShort}" data-edit-furn-w="${this.escapeHtml(f.id)}" />
+                  <input type="number" step="0.05" min="0.15" class="inline-dim-input" value="${dDisp}" aria-label="Depth in ${unitShort}" data-edit-furn-d="${this.escapeHtml(f.id)}" />
+                  <input type="number" step="0.05" min="0.15" class="inline-dim-input" value="${hDisp}" aria-label="Height in ${unitShort}" data-edit-furn-h="${this.escapeHtml(f.id)}" />
+                  <button type="button" class="btn-mini" data-rotate-furn="${this.escapeHtml(f.id)}" title="Rotate 90 degrees">↻ 90°</button>
+                  <button type="button" class="btn-mini btn-mini-danger" data-remove-furn="${this.escapeHtml(f.id)}">Remove</button>
+                </div>
+              </div>`;
+                  })
                   .join('')
           }
         </div>
@@ -878,12 +1038,35 @@ export class UIManager {
     this.bindModalBodyEvents();
   }
 
+  private getRoomCenterXZAndFloor(): { cx: number; cz: number; floorY: number } {
+    const pts = this.roomManager.getFloorPoints();
+    if (pts.length === 0) return { cx: 0, cz: 0, floorY: 0 };
+    let sx = 0, sy = 0, sz = 0;
+    for (const p of pts) {
+      sx += p.x;
+      sy += p.y;
+      sz += p.z;
+    }
+    return { cx: sx / pts.length, cz: sz / pts.length, floorY: sy / pts.length };
+  }
+
   private bindModalBodyEvents(): void {
     const content = this.els.modalContent;
+    const scaleToMeters = this.roomManager.getUnitSystem() === 'imperial' ? 0.3048 : 1;
 
     const roomInput = content.querySelector<HTMLInputElement>('#room-name-input');
     roomInput?.addEventListener('input', () => {
       this.currentRoomNameDraft = roomInput.value;
+    });
+
+    content.querySelectorAll<HTMLButtonElement>('[data-start-mark]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const type = btn.getAttribute('data-start-mark') === 'window' ? 'window' : 'door';
+        if (this.roomManager.startMarkingOpening(type)) {
+          this.closeExportModal();
+          this.showToast(`Aim at ${type} corner #1 on any wall and tap`);
+        }
+      });
     });
 
     content.querySelectorAll<HTMLButtonElement>('[data-preset-opening]').forEach((btn) => {
@@ -902,24 +1085,85 @@ export class UIManager {
       });
     });
 
-    const addCustomBtn = content.querySelector<HTMLButtonElement>('#btn-add-custom-opening');
-    addCustomBtn?.addEventListener('click', () => {
-      const typeEl = content.querySelector<HTMLSelectElement>('#custom-opening-type');
-      const wEl = content.querySelector<HTMLInputElement>('#custom-opening-w');
-      const hEl = content.querySelector<HTMLInputElement>('#custom-opening-h');
-      const type = typeEl?.value === 'window' ? 'window' : 'door';
-      const rawW = parseFloat(wEl?.value || '');
-      const rawH = parseFloat(hEl?.value || '');
-      if (!Number.isFinite(rawW) || !Number.isFinite(rawH) || rawW <= 0 || rawH <= 0) {
-        this.showToast('Enter valid opening dimensions');
-        return;
-      }
-      const scaleToMeters = this.roomManager.getUnitSystem() === 'imperial' ? 0.3048 : 1;
-      const w = rawW * scaleToMeters;
-      const h = rawH * scaleToMeters;
-      this.roomManager.addOpening(type, w, h, type === 'door' ? 'Custom Door' : 'Custom Window');
-      this.renderExportModalBody();
-      this.showToast('Opening added');
+    const openingForm = content.querySelector<HTMLFormElement>('#form-add-opening');
+    const openingErrorEl = content.querySelector<HTMLElement>('#opening-form-error');
+    if (openingForm) {
+      const clearOpeningErrors = (el?: HTMLInputElement) => {
+        if (el) el.removeAttribute('aria-invalid');
+        if (openingErrorEl) openingErrorEl.textContent = '';
+      };
+      openingForm.querySelectorAll<HTMLInputElement>('input[type="number"]').forEach((inp) => {
+        inp.addEventListener('input', () => clearOpeningErrors(inp));
+      });
+      openingForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const formData = new FormData(openingForm);
+        const type = formData.get('openingType') === 'window' ? 'window' : 'door';
+        const wEl = openingForm.querySelector<HTMLInputElement>('#custom-opening-w');
+        const hEl = openingForm.querySelector<HTMLInputElement>('#custom-opening-h');
+        const rawW = parseFloat(String(formData.get('width') ?? ''));
+        const rawH = parseFloat(String(formData.get('height') ?? ''));
+        const rawSill = parseFloat(String(formData.get('sill') ?? '0'));
+        const rawWall = String(formData.get('wallIndex') ?? '');
+
+        if (!Number.isFinite(rawW) || rawW <= 0) {
+          wEl?.setAttribute('aria-invalid', 'true');
+          wEl?.focus();
+          if (openingErrorEl) openingErrorEl.textContent = 'Enter a valid width > 0.';
+          return;
+        }
+        if (!Number.isFinite(rawH) || rawH <= 0) {
+          hEl?.setAttribute('aria-invalid', 'true');
+          hEl?.focus();
+          if (openingErrorEl) openingErrorEl.textContent = 'Enter a valid height > 0.';
+          return;
+        }
+
+        const w = rawW * scaleToMeters;
+        const h = rawH * scaleToMeters;
+        const sill = Number.isFinite(rawSill) && rawSill >= 0 ? rawSill * scaleToMeters : 0;
+        const wallIndex = rawWall !== '' ? parseInt(rawWall, 10) : undefined;
+        let offsetAlong: number | undefined;
+        if (wallIndex !== undefined && Number.isFinite(wallIndex)) {
+          const pts = this.roomManager.getFloorPoints();
+          const p1 = pts[wallIndex];
+          const p2 = pts[(wallIndex + 1) % pts.length];
+          if (p1 && p2) {
+            const wallLen = calculateHorizontalDistance(p1, p2);
+            offsetAlong = Math.max(0, Math.round((wallLen - w) * 50) / 100);
+          }
+        }
+
+        this.roomManager.addOpening(
+          type,
+          w,
+          h,
+          type === 'door' ? 'Custom Door' : 'Custom Window',
+          {
+            wallIndex: Number.isFinite(wallIndex) ? wallIndex : undefined,
+            offsetAlongWallMeters: offsetAlong,
+            sillHeightMeters: sill,
+            source: 'manual'
+          }
+        );
+        this.renderExportModalBody();
+        this.showToast('Opening added');
+      });
+    }
+
+    content.querySelectorAll<HTMLInputElement>('[data-edit-op-w], [data-edit-op-h]').forEach((inp) => {
+      inp.addEventListener('change', () => {
+        const val = parseFloat(inp.value);
+        if (!Number.isFinite(val) || val <= 0) return;
+        const wId = inp.getAttribute('data-edit-op-w');
+        const hId = inp.getAttribute('data-edit-op-h');
+        if (wId) {
+          this.roomManager.updateOpening(wId, { widthMeters: val * scaleToMeters, source: 'manual' });
+        } else if (hId) {
+          this.roomManager.updateOpening(hId, { heightMeters: val * scaleToMeters, source: 'manual' });
+        }
+        this.renderExportModalBody();
+      });
     });
 
     content.querySelectorAll<HTMLButtonElement>('[data-remove-opening]').forEach((btn) => {
@@ -927,6 +1171,106 @@ export class UIManager {
         const id = btn.getAttribute('data-remove-opening');
         if (!id) return;
         this.roomManager.removeOpening(id);
+        this.renderExportModalBody();
+      });
+    });
+
+    content.querySelectorAll<HTMLButtonElement>('[data-preset-furn]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const spec = btn.getAttribute('data-preset-furn');
+        if (!spec) return;
+        const [label, wStr, dStr, hStr] = spec.split(':');
+        const { cx, cz, floorY } = this.getRoomCenterXZAndFloor();
+        this.roomManager.addFurniture({
+          label,
+          centerXZ: [cx, cz],
+          widthMeters: parseFloat(wStr),
+          depthMeters: parseFloat(dStr),
+          heightMeters: parseFloat(hStr),
+          floorY,
+          yawRad: 0,
+          source: 'manual'
+        });
+        this.renderExportModalBody();
+        this.showToast(`Added ${label} (drag in 2D Plan to position)`);
+      });
+    });
+
+    const furnForm = content.querySelector<HTMLFormElement>('#form-add-furniture');
+    const furnErrorEl = content.querySelector<HTMLElement>('#furn-form-error');
+    if (furnForm) {
+      furnForm.querySelectorAll<HTMLInputElement>('input').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          inp.removeAttribute('aria-invalid');
+          if (furnErrorEl) furnErrorEl.textContent = '';
+        });
+      });
+      furnForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const formData = new FormData(furnForm);
+        const label = String(formData.get('label') ?? '').trim();
+        const rawW = parseFloat(String(formData.get('width') ?? ''));
+        const rawD = parseFloat(String(formData.get('depth') ?? ''));
+        const rawH = parseFloat(String(formData.get('height') ?? ''));
+        if (!label) {
+          furnForm.querySelector<HTMLInputElement>('#furn-label')?.setAttribute('aria-invalid', 'true');
+          if (furnErrorEl) furnErrorEl.textContent = 'Enter a furniture label.';
+          return;
+        }
+        if (!Number.isFinite(rawW) || rawW <= 0 || !Number.isFinite(rawD) || rawD <= 0 || !Number.isFinite(rawH) || rawH <= 0) {
+          if (furnErrorEl) furnErrorEl.textContent = 'Enter valid positive dimensions.';
+          return;
+        }
+        const { cx, cz, floorY } = this.getRoomCenterXZAndFloor();
+        this.roomManager.addFurniture({
+          label,
+          centerXZ: [cx, cz],
+          widthMeters: rawW * scaleToMeters,
+          depthMeters: rawD * scaleToMeters,
+          heightMeters: rawH * scaleToMeters,
+          floorY,
+          yawRad: 0,
+          source: 'manual'
+        });
+        this.renderExportModalBody();
+        this.showToast(`Added ${label}`);
+      });
+    }
+
+    content
+      .querySelectorAll<HTMLInputElement>('[data-edit-furn-w], [data-edit-furn-d], [data-edit-furn-h]')
+      .forEach((inp) => {
+        inp.addEventListener('change', () => {
+          const val = parseFloat(inp.value);
+          if (!Number.isFinite(val) || val <= 0) return;
+          const wId = inp.getAttribute('data-edit-furn-w');
+          const dId = inp.getAttribute('data-edit-furn-d');
+          const hId = inp.getAttribute('data-edit-furn-h');
+          if (wId) {
+            this.roomManager.updateFurniture(wId, { widthMeters: val * scaleToMeters, source: 'manual' });
+          } else if (dId) {
+            this.roomManager.updateFurniture(dId, { depthMeters: val * scaleToMeters, source: 'manual' });
+          } else if (hId) {
+            this.roomManager.updateFurniture(hId, { heightMeters: val * scaleToMeters, source: 'manual' });
+          }
+          this.renderExportModalBody();
+        });
+      });
+
+    content.querySelectorAll<HTMLButtonElement>('[data-rotate-furn]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-rotate-furn');
+        if (!id) return;
+        this.roomManager.rotateFurniture90(id);
+        this.renderExportModalBody();
+      });
+    });
+
+    content.querySelectorAll<HTMLButtonElement>('[data-remove-furn]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-remove-furn');
+        if (!id) return;
+        this.roomManager.removeFurniture(id);
         this.renderExportModalBody();
       });
     });

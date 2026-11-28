@@ -119,7 +119,13 @@ export class AutoScanHUD {
     this.liveAnnounceEl.textContent = '';
   }
 
-  public update(shell: ShellEstimate, stats: ScanStats, unitSystem: UnitSystem): void {
+  public update(
+    shell: ShellEstimate,
+    stats: ScanStats,
+    unitSystem: UnitSystem,
+    furnitureCount = 0,
+    openingsCount = 0
+  ): void {
     if (!shell.valid) {
       this.progressEl.removeAttribute('value');
       this.wallPillEl.textContent = `${stats.wallVoxelCount} wall pts`;
@@ -153,7 +159,7 @@ export class AutoScanHUD {
     } else {
       this.valHeightEl.textContent = `~${formatDistance(shell.provisionalCeilingY - shell.floorY, unitSystem)}?`;
     }
-    this.valWallsEl.textContent = `🟢${goodCount} 🟡${medCount} 🔴${lowCount}`;
+    this.valWallsEl.textContent = `🟢${goodCount} 🟡${medCount} 🔴${lowCount} • 🪑${furnitureCount} 🚪${openingsCount}`;
     this.valPassesEl.textContent = `${stats.distinctViewpoints}p / ${stats.voxelCount}vox`;
 
     this.btnFinishEl.disabled = shell.cornersXZ.length < 3;

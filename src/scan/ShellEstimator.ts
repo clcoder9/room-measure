@@ -28,6 +28,24 @@ interface UVWallVoxel {
 
 const OCC_CELL = FREE_CELL_SIZE; // 0.10 m
 
+export function pointInPolygonXZ(
+  x: number,
+  z: number,
+  poly: [number, number][]
+): boolean {
+  let inside = false;
+  const n = poly.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const [xi, zi] = poly[i];
+    const [xj, zj] = poly[j];
+    const intersects =
+      zi > z !== zj > z &&
+      x < ((xj - xi) * (z - zi)) / (zj - zi || 1e-9) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
 function signedArea2D(pts: [number, number][]): number {
   let sum = 0;
   const n = pts.length;
@@ -285,7 +303,26 @@ export class ShellEstimator {
     }
 
     // Ensure CCW winding in (u, v) so inward normal is (-dv, du)
-    const orderedUV = signedArea2D(cornersUV) < 0 ? cornersUV.slice().reverse() : cornersUV.slice();
+    let orderedUV = signedArea2D(cornersUV) < 0 ? cornersUV.slice().reverse() : cornersUV.slice();
+    // Strip degenerate edges < 5cm so walls[i] stays strictly 1-to-1 with polygon edge i
+    orderedUV = orderedUV.filter((pt, idx) => {
+      const next = orderedUV[(idx + 1) % orderedUV.length];
+      return Math.hypot(next[0] - pt[0], next[1] - pt[1]) >= 0.05;
+    });
+
+    if (orderedUV.length < 3) {
+      return {
+        shell: { ...emptyShell, yawRad },
+        stats: {
+          voxelCount,
+          wallVoxelCount: wallVoxels.length,
+          frameCount,
+          distinctViewpoints,
+          readinessPct: 25,
+          guidanceHint: 'Keep panning across more walls to close the room perimeter.'
+        }
+      };
+    }
 
     // Transform back to world XZ
     const cornersXZ: [number, number][] = orderedUV.map(([u, v]) => [
@@ -840,6 +877,9 @@ export class ShellEstimator {
     // Expand behind wall-adjacent cabinets/furniture toward outer wall peaks
     this.expandMaskToOuterWalls(occ, cols, rows, uMin, vMin, plusUPeaks, minusUPeaks, plusVPeaks, minusVPeaks);
 
+    // Trim narrow untraversed doorway protrusions outside strong perimeter wall peaks
+    this.closeUntraversedDoorwayNecks(occ, travCount, cols, rows, uMin, vMin, plusUPeaks, minusUPeaks, plusVPeaks, minusVPeaks);
+
     // Flood-fill exterior from borders and fill interior islands < 2.5 m^2 (250 cells)
     this.fillSmallInteriorHoles(occ, cols, rows, 250);
 
@@ -1011,6 +1051,105 @@ export class ShellEstimator {
         }
       }
     }
+  }
+
+  private static closeUntraversedDoorwayNecks(
+    occ: Uint8Array,
+    travCount: Uint16Array,
+    cols: number,
+    rows: number,
+    uMin: number,
+    vMin: number,
+    plusUPeaks: WallPeak[],
+    minusUPeaks: WallPeak[],
+    plusVPeaks: WallPeak[],
+    minusVPeaks: WallPeak[]
+  ): void {
+    const MAX_DOOR_CELLS = 14; // 1.4 m
+    const trimFamily = (peaks: WallPeak[], axis: 'u' | 'v', inwardSign: 1 | -1) => {
+      const primMin = axis === 'u' ? uMin : vMin;
+      const tanMin = axis === 'u' ? vMin : uMin;
+      const primLimit = axis === 'u' ? cols : rows;
+      const tanLimit = axis === 'u' ? rows : cols;
+      const cellIdx = (p: number, t: number) => (axis === 'u' ? t * cols + p : p * cols + t);
+
+      for (const pk of peaks) {
+        if (pk.spanM < 1.2 || pk.upperWallHits < 4) continue;
+        const pPeak = Math.max(1, Math.min(primLimit - 2, Math.floor((pk.coord - primMin) / OCC_CELL)));
+        const tStart = Math.max(1, Math.floor((pk.perpMin - tanMin) / OCC_CELL));
+        const tEnd = Math.min(tanLimit - 2, Math.ceil((pk.perpMax - tanMin) / OCC_CELL));
+        const outDir = -inwardSign;
+
+        const span = tEnd - tStart + 1;
+        if (span < 6) continue;
+        const hasInside = new Uint8Array(span);
+        const hasOutside = new Uint8Array(span);
+
+        for (let i = 0; i < span; i++) {
+          const t = tStart + i;
+          for (let k = 0; k <= 3; k++) {
+            const pIn = pPeak + inwardSign * k;
+            if (pIn >= 0 && pIn < primLimit && occ[cellIdx(pIn, t)] === 1) {
+              hasInside[i] = 1;
+              break;
+            }
+          }
+          for (let k = 1; k <= 20; k++) {
+            const pOut = pPeak + outDir * k;
+            if (pOut < 0 || pOut >= primLimit) break;
+            if (occ[cellIdx(pOut, t)] === 1) {
+              hasOutside[i] = 1;
+              break;
+            }
+          }
+        }
+
+        let i = 0;
+        while (i < span) {
+          if (hasOutside[i] === 0) {
+            i++;
+            continue;
+          }
+          const rStart = i;
+          while (i < span && hasOutside[i] === 1) i++;
+          const rEnd = i - 1;
+          const widthCells = rEnd - rStart + 1;
+          const leftBound = rStart > 0 && hasInside[rStart - 1] === 1 && hasOutside[rStart - 1] === 0;
+          const rightBound = i < span && hasInside[i] === 1 && hasOutside[i] === 0;
+
+          if (!leftBound || !rightBound || widthCells > MAX_DOOR_CELLS) continue;
+
+          // Keep L-shape or connected room if camera ever walked out past this line
+          let anyTraversed = false;
+          for (let j = rStart; j <= rEnd && !anyTraversed; j++) {
+            const t = tStart + j;
+            for (let k = 1; k <= 24; k++) {
+              const pOut = pPeak + outDir * k;
+              if (pOut < 0 || pOut >= primLimit) break;
+              if (travCount[cellIdx(pOut, t)] > 0) {
+                anyTraversed = true;
+                break;
+              }
+            }
+          }
+          if (anyTraversed) continue;
+
+          for (let j = rStart; j <= rEnd; j++) {
+            const t = tStart + j;
+            for (let k = 1; k <= 24; k++) {
+              const pOut = pPeak + outDir * k;
+              if (pOut < 0 || pOut >= primLimit) break;
+              occ[cellIdx(pOut, t)] = 0;
+            }
+          }
+        }
+      }
+    };
+
+    trimFamily(plusUPeaks, 'u', 1);
+    trimFamily(minusUPeaks, 'u', -1);
+    trimFamily(plusVPeaks, 'v', 1);
+    trimFamily(minusVPeaks, 'v', -1);
   }
 
   private static fillSmallInteriorHoles(

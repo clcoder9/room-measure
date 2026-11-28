@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { FurnitureBox, WallOpening } from '../scan/ScanTypes';
 import {
   UnitSystem,
   calculateHorizontalDistance,
@@ -7,10 +8,20 @@ import {
   formatDistance
 } from './math';
 
+export interface VisualOpeningMarkState {
+  active: boolean;
+  type: 'door' | 'window';
+  firstHit: { wallIndex: number; alongM: number; heightM: number; worldPos: THREE.Vector3 } | null;
+  liveHit: { wallIndex: number; alongM: number; heightM: number; worldPos: THREE.Vector3 } | null;
+}
+
 export class MeasurementVisuals extends THREE.Group {
   private markersGroup: THREE.Group;
   private linesGroup: THREE.Group;
   private labelsGroup: THREE.Group;
+  private furnitureGroup: THREE.Group;
+  private openingsGroup: THREE.Group;
+  private markPreviewGroup: THREE.Group;
   private polygonMesh: THREE.Mesh | null = null;
   private volumeMesh: THREE.Mesh | null = null;
   private liveLine: THREE.Line | null = null;
@@ -31,6 +42,32 @@ export class MeasurementVisuals extends THREE.Group {
   private sphereMaterial = new THREE.MeshBasicMaterial({ color: 0x00f2fe });
   private firstPointMaterial = new THREE.MeshBasicMaterial({ color: 0x10b981 });
   private ceilingSphereMaterial = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+  private furnitureFillMat = new THREE.MeshBasicMaterial({
+    color: 0x10b981,
+    transparent: true,
+    opacity: 0.12,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  private furnitureLineMat = new THREE.LineBasicMaterial({
+    color: 0x34d399,
+    depthTest: false
+  });
+  private doorLineMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, depthTest: false });
+  private windowLineMat = new THREE.LineBasicMaterial({ color: 0xfbbf24, depthTest: false });
+  private openingFillMat = new THREE.MeshBasicMaterial({
+    color: 0xfbbf24,
+    transparent: true,
+    opacity: 0.16,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  private markDashedMat = new THREE.LineDashedMaterial({
+    color: 0xfbbf24,
+    dashSize: 0.06,
+    gapSize: 0.04,
+    depthTest: false
+  });
   private pillarMaterial = new THREE.MeshBasicMaterial({
     color: 0x00f2fe,
     transparent: true,
@@ -83,10 +120,16 @@ export class MeasurementVisuals extends THREE.Group {
     this.markersGroup = new THREE.Group();
     this.linesGroup = new THREE.Group();
     this.labelsGroup = new THREE.Group();
+    this.furnitureGroup = new THREE.Group();
+    this.openingsGroup = new THREE.Group();
+    this.markPreviewGroup = new THREE.Group();
 
     this.add(this.markersGroup);
     this.add(this.linesGroup);
     this.add(this.labelsGroup);
+    this.add(this.furnitureGroup);
+    this.add(this.openingsGroup);
+    this.add(this.markPreviewGroup);
 
     this.initLiveLine();
     this.initLiveAngleSprite();
@@ -131,7 +174,9 @@ export class MeasurementVisuals extends THREE.Group {
     floorPoints: THREE.Vector3[],
     ceilingPoint: THREE.Vector3 | null,
     isFloorClosed: boolean,
-    unitSystem: UnitSystem = 'metric'
+    unitSystem: UnitSystem = 'metric',
+    furniture: FurnitureBox[] = [],
+    openings: WallOpening[] = []
   ): void {
     this.clearDynamicObjects();
 
@@ -219,13 +264,13 @@ export class MeasurementVisuals extends THREE.Group {
     }
 
     // 4. Draw Ceiling point & height drop line
+    const floorY = floorPoints.length > 0 ? calculateAverageFloorHeight(floorPoints) : 0;
     if (ceilingPoint && floorPoints.length >= 1) {
       const ceilingMesh = new THREE.Mesh(this.sphereGeo, this.ceilingSphereMaterial);
       ceilingMesh.position.copy(ceilingPoint);
       ceilingMesh.renderOrder = 999;
       this.markersGroup.add(ceilingMesh);
 
-      const floorY = calculateAverageFloorHeight(floorPoints);
       const basePoint = new THREE.Vector3(ceilingPoint.x, floorY, ceilingPoint.z);
 
       const dropGeo = new THREE.BufferGeometry().setFromPoints([basePoint, ceilingPoint]);
@@ -245,6 +290,172 @@ export class MeasurementVisuals extends THREE.Group {
         this.buildExtrudedVolume(floorPoints, height);
       }
     }
+
+    // 6. Layer 2: Furniture Wireframe Silhouettes (rotation.y = -yawRad)
+    for (const box of furniture) {
+      const baseFloorY = floorPoints.length > 0 ? floorY : box.floorY;
+      const boxGeo = new THREE.BoxGeometry(box.widthMeters, box.heightMeters, box.depthMeters);
+      const mesh = new THREE.Mesh(boxGeo, this.furnitureFillMat);
+      mesh.position.set(box.centerXZ[0], baseFloorY + box.heightMeters * 0.5, box.centerXZ[1]);
+      mesh.rotation.y = -box.yawRad;
+      mesh.renderOrder = 995;
+      this.furnitureGroup.add(mesh);
+
+      const wireGeo = new THREE.EdgesGeometry(boxGeo);
+      const wire = new THREE.LineSegments(wireGeo, this.furnitureLineMat);
+      wire.position.copy(mesh.position);
+      wire.rotation.y = -box.yawRad;
+      wire.renderOrder = 996;
+      this.furnitureGroup.add(wire);
+
+      const dims = `${formatDistance(box.widthMeters, unitSystem)}×${formatDistance(box.depthMeters, unitSystem)}×${formatDistance(box.heightMeters, unitSystem)}`;
+      const fSprite = this.createTextSprite(`${box.label} ${dims}`, '#34d399');
+      fSprite.scale.set(0.32, 0.08, 1);
+      fSprite.position.set(box.centerXZ[0], baseFloorY + box.heightMeters + 0.12, box.centerXZ[1]);
+      this.furnitureGroup.add(fSprite);
+    }
+
+    // 7. Layer 3: Positioned Doors & Windows anchored to wall segments
+    if (isFloorClosed && floorPoints.length >= 3) {
+      const n = floorPoints.length;
+      for (const op of openings) {
+        if (op.wallIndex === undefined || op.offsetAlongWallMeters === undefined) continue;
+        const p1 = floorPoints[op.wallIndex];
+        const p2 = floorPoints[(op.wallIndex + 1) % n];
+        if (!p1 || !p2) continue;
+
+        const dx = p2.x - p1.x;
+        const dz = p2.z - p1.z;
+        const wallLen = Math.hypot(dx, dz);
+        if (wallLen < 0.05) continue;
+        const tx = dx / wallLen;
+        const tz = dz / wallLen;
+        const nx = -tz;
+        const nz = tx;
+
+        const s0 = Math.max(0, Math.min(wallLen, op.offsetAlongWallMeters));
+        const s1 = Math.max(s0 + 0.05, Math.min(wallLen, s0 + op.widthMeters));
+        const sill = op.sillHeightMeters ?? 0;
+        const y0 = floorY + sill;
+        const y1 = y0 + op.heightMeters;
+        const offX = nx * 0.025;
+        const offZ = nz * 0.025;
+
+        const ax = p1.x + tx * s0 + offX;
+        const az = p1.z + tz * s0 + offZ;
+        const bx = p1.x + tx * s1 + offX;
+        const bz = p1.z + tz * s1 + offZ;
+
+        const quadGeo = new THREE.BufferGeometry();
+        quadGeo.setAttribute(
+          'position',
+          new THREE.BufferAttribute(
+            new Float32Array([ax, y0, az, bx, y0, bz, bx, y1, bz, ax, y0, az, bx, y1, bz, ax, y1, az]),
+            3
+          )
+        );
+        const quadMesh = new THREE.Mesh(quadGeo, this.openingFillMat);
+        quadMesh.renderOrder = 995;
+        this.openingsGroup.add(quadMesh);
+
+        const segPts: THREE.Vector3[] = [
+          new THREE.Vector3(ax, y0, az),
+          new THREE.Vector3(bx, y0, bz),
+          new THREE.Vector3(bx, y0, bz),
+          new THREE.Vector3(bx, y1, bz),
+          new THREE.Vector3(bx, y1, bz),
+          new THREE.Vector3(ax, y1, az),
+          new THREE.Vector3(ax, y1, az),
+          new THREE.Vector3(ax, y0, az)
+        ];
+        if (op.type === 'window') {
+          const yMid = (y0 + y1) * 0.5;
+          segPts.push(new THREE.Vector3(ax, yMid, az), new THREE.Vector3(bx, yMid, bz));
+        }
+        const frameGeo = new THREE.BufferGeometry().setFromPoints(segPts);
+        const frameLine = new THREE.LineSegments(
+          frameGeo,
+          op.type === 'door' ? this.doorLineMat : this.windowLineMat
+        );
+        frameLine.renderOrder = 997;
+        this.openingsGroup.add(frameLine);
+
+        const badge = this.createTextSprite(
+          `${op.type === 'door' ? '🚪' : '🪟'} ${formatDistance(op.widthMeters, unitSystem)}×${formatDistance(op.heightMeters, unitSystem)}`,
+          '#fbbf24'
+        );
+        badge.scale.set(0.28, 0.075, 1);
+        badge.position.set((ax + bx) * 0.5 + nx * 0.08, (y0 + y1) * 0.5, (az + bz) * 0.5 + nz * 0.08);
+        this.openingsGroup.add(badge);
+      }
+    }
+  }
+
+  public updateOpeningMarkPreview(
+    floorPoints: THREE.Vector3[],
+    markState: VisualOpeningMarkState,
+    unitSystem: UnitSystem
+  ): void {
+    this.disposeGroupObjects(this.markPreviewGroup);
+    if (!markState.active || floorPoints.length < 3 || !markState.firstHit || !markState.liveHit) {
+      return;
+    }
+
+    const first = markState.firstHit;
+    const live = markState.liveHit;
+    if (live.wallIndex !== first.wallIndex) return;
+
+    const p1 = floorPoints[first.wallIndex];
+    const p2 = floorPoints[(first.wallIndex + 1) % floorPoints.length];
+    if (!p1 || !p2) return;
+
+    const dx = p2.x - p1.x;
+    const dz = p2.z - p1.z;
+    const wallLen = Math.hypot(dx, dz);
+    if (wallLen < 0.05) return;
+    const tx = dx / wallLen;
+    const tz = dz / wallLen;
+    const nx = -tz;
+    const nz = tx;
+    const floorY = calculateAverageFloorHeight(floorPoints);
+
+    const s0 = Math.min(first.alongM, live.alongM);
+    const s1 = Math.max(first.alongM, live.alongM);
+    const h0 = markState.type === 'door' && Math.min(first.heightM, live.heightM) <= 0.30
+      ? 0
+      : Math.min(first.heightM, live.heightM);
+    const h1 = Math.max(first.heightM, live.heightM);
+
+    const y0 = floorY + h0;
+    const y1 = floorY + h1;
+    const offX = nx * 0.035;
+    const offZ = nz * 0.035;
+    const ax = p1.x + tx * s0 + offX;
+    const az = p1.z + tz * s0 + offZ;
+    const bx = p1.x + tx * s1 + offX;
+    const bz = p1.z + tz * s1 + offZ;
+
+    const loopGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(ax, y0, az),
+      new THREE.Vector3(bx, y0, bz),
+      new THREE.Vector3(bx, y1, bz),
+      new THREE.Vector3(ax, y1, az),
+      new THREE.Vector3(ax, y0, az)
+    ]);
+    const loopLine = new THREE.Line(loopGeo, this.markDashedMat);
+    loopLine.computeLineDistances();
+    loopLine.renderOrder = 1002;
+    this.markPreviewGroup.add(loopLine);
+
+    const wM = Math.max(0, s1 - s0);
+    const hM = Math.max(0, h1 - h0);
+    const label = this.createTextSprite(
+      `${formatDistance(wM, unitSystem)} × ${formatDistance(hM, unitSystem)}`,
+      '#fbbf24'
+    );
+    label.scale.set(0.28, 0.075, 1);
+    label.position.set((ax + bx) * 0.5 + nx * 0.08, (y0 + y1) * 0.5, (az + bz) * 0.5 + nz * 0.08);
+    this.markPreviewGroup.add(label);
   }
 
   /**
@@ -362,21 +573,21 @@ export class MeasurementVisuals extends THREE.Group {
     this.add(this.volumeMesh);
   }
 
-  private createTextSprite(text: string): THREE.Sprite {
+  private createTextSprite(text: string, borderColor: string = '#00f2fe'): THREE.Sprite {
     const canvas = document.createElement('canvas');
     canvas.width = 256;
     canvas.height = 72;
     const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-      ctx.strokeStyle = '#00f2fe';
+      ctx.strokeStyle = borderColor;
       ctx.lineWidth = 4;
       this.drawRoundedRect(ctx, 4, 4, 248, 64, 16);
       ctx.fill();
       ctx.stroke();
 
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 30px system-ui, -apple-system, sans-serif';
+      ctx.font = 'bold 26px system-ui, -apple-system, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(text, 128, 36);
@@ -475,26 +686,29 @@ export class MeasurementVisuals extends THREE.Group {
     ctx.closePath();
   }
 
+  private disposeGroupObjects(group: THREE.Group): void {
+    while (group.children.length > 0) {
+      const obj = group.children[0];
+      group.remove(obj);
+      if (obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.LineSegments) {
+        obj.geometry.dispose();
+      } else if (obj instanceof THREE.Sprite) {
+        obj.material.map?.dispose();
+        obj.material.dispose();
+      }
+    }
+  }
+
   public clearDynamicObjects(): void {
     while (this.markersGroup.children.length > 0) {
       const obj = this.markersGroup.children[0];
       this.markersGroup.remove(obj);
     }
-    while (this.linesGroup.children.length > 0) {
-      const obj = this.linesGroup.children[0];
-      this.linesGroup.remove(obj);
-      if (obj instanceof THREE.Line) {
-        obj.geometry.dispose();
-      }
-    }
-    while (this.labelsGroup.children.length > 0) {
-      const obj = this.labelsGroup.children[0];
-      this.labelsGroup.remove(obj);
-      if (obj instanceof THREE.Sprite) {
-        obj.material.map?.dispose();
-        obj.material.dispose();
-      }
-    }
+    this.disposeGroupObjects(this.linesGroup);
+    this.disposeGroupObjects(this.labelsGroup);
+    this.disposeGroupObjects(this.furnitureGroup);
+    this.disposeGroupObjects(this.openingsGroup);
+    this.disposeGroupObjects(this.markPreviewGroup);
 
     if (this.polygonMesh) {
       this.remove(this.polygonMesh);
@@ -506,7 +720,7 @@ export class MeasurementVisuals extends THREE.Group {
       this.volumeMesh.geometry.dispose();
       this.volumeMesh = null;
     }
-    // ceilingDropLine is added to linesGroup and disposed in the linesGroup loop above
+    // ceilingDropLine is added to linesGroup and disposed above
     this.ceilingDropLine = null;
   }
 

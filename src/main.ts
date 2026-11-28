@@ -244,14 +244,19 @@ function initApp(): void {
         uiManager.renderAutoScanMiniMap(
           sc.getLatestShell(),
           sc.getLatestCameraPathXZ(),
-          camera
+          camera,
+          sc.getLatestFurniture(),
+          sc.getLatestOpenings()
         );
       } else if (!xrManager.isSpikeModeActive()) {
+        const rm = xrManager.getRoomManager();
         uiManager.renderMiniMap(
-          xrManager.getRoomManager().getFloorPoints(),
-          xrManager.getRoomManager().isClosed(),
+          rm.getFloorPoints(),
+          rm.isClosed(),
           reticlePos,
-          camera
+          camera,
+          rm.getFurniture(),
+          rm.getOpenings()
         );
       }
     },
@@ -301,17 +306,26 @@ function initApp(): void {
 
   autoScanHUD = new AutoScanHUD(xrManager.getScanVisuals(), {
     onFinishScan: () => {
-      const shell = xrManager.getScanController().getLatestShell();
+      const sc = xrManager.getScanController();
+      const shell = sc.getLatestShell();
       if (!shell || !shell.valid || shell.cornersXZ.length < 3) {
         uiManager.showToast('Keep scanning until walls are detected');
         return;
       }
-      xrManager.getRoomManager().loadFromAutoScan(shell.cornersXZ, shell.floorY, shell.ceilingY);
+      const furn = sc.getLatestFurniture();
+      const ops = sc.getLatestOpenings();
+      xrManager.getRoomManager().loadFromAutoScan(
+        shell.cornersXZ,
+        shell.floorY,
+        shell.ceilingY,
+        furn,
+        ops
+      );
       xrManager.setAutoScanActive(false);
       syncModeUI();
       uiManager.showToast(
         shell.ceilingY !== null
-          ? '3D wireframe ready! Tap 2D Plan to fine-tune corners'
+          ? `3D wireframe ready (${furn.length} furniture, ${ops.length} openings)!`
           : 'Floor walls locked! Aim at wall top to pin ceiling height'
       );
     },
@@ -334,11 +348,11 @@ function initApp(): void {
     }
   });
 
-  xrManager.getScanController().setOnUpdate((shell, stats) => {
+  xrManager.getScanController().setOnUpdate((shell, stats, furniture, openings) => {
     if (xrManager.isAutoScanActive()) {
       const unit = xrManager.getRoomManager().getUnitSystem();
       xrManager.getScanController().setUnitSystem(unit);
-      autoScanHUD.update(shell, stats, unit);
+      autoScanHUD.update(shell, stats, unit, furniture.length, openings.length);
     }
   });
 

@@ -154,8 +154,10 @@ export class SpikeVisuals extends THREE.Group {
     addSurface(new THREE.PlaneGeometry(1.35, 2.6), [2.2, 1.3, -1.125], [0, -Math.PI / 2, 0], wallMat, edgeMat);
     addSurface(new THREE.PlaneGeometry(1.35, 2.6), [2.2, 1.3, 1.125], [0, -Math.PI / 2, 0], wallMat, edgeMat);
     addSurface(new THREE.PlaneGeometry(0.9, 0.5), [2.2, 2.35, 0], [0, -Math.PI / 2, 0], wallMat, edgeMat);
-    // Hallway floor beyond doorway
+    // Hallway beyond doorway so depth rays shoot through the doorway (> wall + 1.1m)
     addSurface(new THREE.PlaneGeometry(1.4, 1.2), [2.9, 0, 0], [-Math.PI / 2, 0, 0], wallMat, edgeMat);
+    addSurface(new THREE.PlaneGeometry(1.4, 1.2), [2.9, 2.6, 0], [Math.PI / 2, 0, 0], wallMat, edgeMat);
+    addSurface(new THREE.PlaneGeometry(1.2, 2.6), [3.5, 1.3, 0], [0, -Math.PI / 2, 0], wallMat, edgeMat);
 
     // Kitchen Counter (1.8m x 0.9m x 0.6m) along -X wall
     addSurface(new THREE.BoxGeometry(0.6, 0.9, 1.8), [-1.9, 0.45, -0.5], [0, 0, 0], furnitureMat, furnitureEdgeMat);

@@ -7,7 +7,7 @@ import {
   formatDistance,
   formatArea
 } from '../measurement/math';
-import { ShellEstimate } from '../scan/ScanTypes';
+import { FurnitureBox, ShellEstimate, WallOpening } from '../scan/ScanTypes';
 
 interface MapTransform {
   centerX: number;
@@ -26,16 +26,22 @@ export class MiniMap {
   private isExpanded = false;
 
   private lastFloorPoints: THREE.Vector3[] = [];
+  private lastFurniture: FurnitureBox[] = [];
   private lastTransform: MapTransform | null = null;
   private dragTransform: MapTransform | null = null;
   private draggingIndex: number | null = null;
+  private draggingFurnitureId: string | null = null;
+  private dragFurnOffset: [number, number] = [0, 0];
   private onCornerDrag?: (index: number, newX: number, newZ: number) => void;
+  private onFurnitureDrag?: (id: string, newX: number, newZ: number) => void;
 
   constructor(
     parent: HTMLElement,
-    onCornerDrag?: (index: number, newX: number, newZ: number) => void
+    onCornerDrag?: (index: number, newX: number, newZ: number) => void,
+    onFurnitureDrag?: (id: string, newX: number, newZ: number) => void
   ) {
     this.onCornerDrag = onCornerDrag;
+    this.onFurnitureDrag = onFurnitureDrag;
 
     this.container = document.createElement('div');
     this.container.className = 'minimap-container';
@@ -102,13 +108,14 @@ export class MiniMap {
   public toggleExpand(): void {
     this.isExpanded = !this.isExpanded;
     this.draggingIndex = null;
+    this.draggingFurnitureId = null;
     this.dragTransform = null;
 
     if (this.isExpanded) {
       this.container.classList.add('expanded');
       this.canvas.width = Math.min(window.innerWidth - 40, 420);
       this.canvas.height = Math.min(window.innerHeight * 0.52, 380);
-      this.headerTitleEl.textContent = 'Drag corners to fine-tune • Tap ✕ to close';
+      this.headerTitleEl.textContent = 'Drag corners or furniture • Tap ✕ to close';
       this.toggleBtn.textContent = '✕';
       this.toggleBtn.setAttribute('aria-label', 'Close 2D floor plan');
       this.canvas.style.touchAction = 'none';
@@ -132,52 +139,103 @@ export class MiniMap {
   }
 
   private onCanvasPointerDown(e: PointerEvent): void {
-    if (!this.isExpanded || !this.lastTransform || this.lastFloorPoints.length === 0) return;
+    if (!this.isExpanded || !this.lastTransform) return;
 
     const pt = this.getCanvasPoint(e);
     const t = this.lastTransform;
-    let bestIdx = -1;
-    let bestDist = 20; // hit radius in canvas px
 
-    this.lastFloorPoints.forEach((p, idx) => {
-      const cx = t.w / 2 + (p.x - t.centerX) * t.scale;
-      const cy = t.h / 2 + (p.z - t.centerZ) * t.scale;
-      const dist = Math.hypot(pt.x - cx, pt.y - cy);
-      if (dist <= bestDist) {
-        bestDist = dist;
-        bestIdx = idx;
+    if (this.lastFloorPoints.length > 0) {
+      let bestIdx = -1;
+      let bestDist = 20; // hit radius in canvas px
+
+      this.lastFloorPoints.forEach((p, idx) => {
+        const cx = t.w / 2 + (p.x - t.centerX) * t.scale;
+        const cy = t.h / 2 + (p.z - t.centerZ) * t.scale;
+        const dist = Math.hypot(pt.x - cx, pt.y - cy);
+        if (dist <= bestDist) {
+          bestDist = dist;
+          bestIdx = idx;
+        }
+      });
+
+      if (bestIdx !== -1) {
+        e.stopPropagation();
+        e.preventDefault();
+        this.draggingIndex = bestIdx;
+        this.dragTransform = { ...t };
+        try {
+          this.canvas.setPointerCapture(e.pointerId);
+        } catch {
+          // Ignore if pointer capture is unavailable
+        }
+        return;
       }
-    });
+    }
 
-    if (bestIdx !== -1) {
-      e.stopPropagation();
-      e.preventDefault();
-      this.draggingIndex = bestIdx;
-      this.dragTransform = { ...t };
-      try {
-        this.canvas.setPointerCapture(e.pointerId);
-      } catch {
-        // Ignore if pointer capture is unavailable
+    if (this.lastFurniture.length > 0 && this.onFurnitureDrag) {
+      const wx = t.centerX + (pt.x - t.w / 2) / t.scale;
+      const wz = t.centerZ + (pt.y - t.h / 2) / t.scale;
+      const padM = Math.max(0.10, 8 / t.scale);
+
+      for (let i = this.lastFurniture.length - 1; i >= 0; i--) {
+        const f = this.lastFurniture[i];
+        const dx = wx - f.centerXZ[0];
+        const dz = wz - f.centerXZ[1];
+        const cos = Math.cos(f.yawRad);
+        const sin = Math.sin(f.yawRad);
+        const lu = dx * cos + dz * sin;
+        const lv = -dx * sin + dz * cos;
+        if (Math.abs(lu) <= f.widthMeters * 0.5 + padM && Math.abs(lv) <= f.depthMeters * 0.5 + padM) {
+          e.stopPropagation();
+          e.preventDefault();
+          this.draggingFurnitureId = f.id;
+          this.dragFurnOffset = [f.centerXZ[0] - wx, f.centerXZ[1] - wz];
+          this.dragTransform = { ...t };
+          try {
+            this.canvas.setPointerCapture(e.pointerId);
+          } catch {
+            // Ignore
+          }
+          return;
+        }
       }
     }
   }
 
   private onCanvasPointerMove(e: PointerEvent): void {
-    if (this.draggingIndex === null || !this.dragTransform || !this.onCornerDrag) return;
-    e.stopPropagation();
-    e.preventDefault();
+    if (!this.dragTransform) return;
 
-    const pt = this.getCanvasPoint(e);
-    const t = this.dragTransform;
-    const wx = t.centerX + (pt.x - t.w / 2) / t.scale;
-    const wz = t.centerZ + (pt.y - t.h / 2) / t.scale;
-    this.onCornerDrag(this.draggingIndex, wx, wz);
+    if (this.draggingIndex !== null && this.onCornerDrag) {
+      e.stopPropagation();
+      e.preventDefault();
+      const pt = this.getCanvasPoint(e);
+      const t = this.dragTransform;
+      const wx = t.centerX + (pt.x - t.w / 2) / t.scale;
+      const wz = t.centerZ + (pt.y - t.h / 2) / t.scale;
+      this.onCornerDrag(this.draggingIndex, wx, wz);
+      return;
+    }
+
+    if (this.draggingFurnitureId !== null && this.onFurnitureDrag) {
+      e.stopPropagation();
+      e.preventDefault();
+      const pt = this.getCanvasPoint(e);
+      const t = this.dragTransform;
+      const wx = t.centerX + (pt.x - t.w / 2) / t.scale;
+      const wz = t.centerZ + (pt.y - t.h / 2) / t.scale;
+      this.onFurnitureDrag(
+        this.draggingFurnitureId,
+        wx + this.dragFurnOffset[0],
+        wz + this.dragFurnOffset[1]
+      );
+    }
   }
 
   private onCanvasPointerUp(e: PointerEvent): void {
-    if (this.draggingIndex === null) return;
+    if (this.draggingIndex === null && this.draggingFurnitureId === null) return;
     e.stopPropagation();
     this.draggingIndex = null;
+    this.draggingFurnitureId = null;
     this.dragTransform = null;
     try {
       if (this.canvas.hasPointerCapture(e.pointerId)) {
@@ -185,6 +243,77 @@ export class MiniMap {
       }
     } catch {
       // Ignore
+    }
+  }
+
+  private drawFurnitureBoxes2D(
+    furniture: FurnitureBox[],
+    toX: (wx: number) => number,
+    toY: (wz: number) => number,
+    scale: number,
+    showLabels: boolean
+  ): void {
+    const ctx = this.ctx;
+    for (const f of furniture) {
+      const cx = toX(f.centerXZ[0]);
+      const cy = toY(f.centerXZ[1]);
+      const pw = f.widthMeters * scale;
+      const pd = f.depthMeters * scale;
+      const isDragging = this.draggingFurnitureId === f.id;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(f.yawRad);
+      ctx.fillStyle = isDragging ? 'rgba(16, 185, 129, 0.38)' : 'rgba(16, 185, 129, 0.22)';
+      ctx.strokeStyle = isDragging ? '#ffffff' : '#34d399';
+      ctx.lineWidth = isDragging ? 2 : 1.4;
+      ctx.fillRect(-pw * 0.5, -pd * 0.5, pw, pd);
+      ctx.strokeRect(-pw * 0.5, -pd * 0.5, pw, pd);
+      if (showLabels && pw > 24 && pd > 14) {
+        ctx.fillStyle = '#a7f3d0';
+        ctx.font = 'bold 9px system-ui';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(f.label.split(' ')[0], 0, 0);
+      }
+      ctx.restore();
+    }
+  }
+
+  private drawWallOpenings2D(
+    openings: WallOpening[],
+    getWallEndpoints: (wallIndex: number) => { p1: [number, number]; p2: [number, number] } | null,
+    toX: (wx: number) => number,
+    toY: (wz: number) => number
+  ): void {
+    const ctx = this.ctx;
+    for (const op of openings) {
+      if (op.wallIndex === undefined || op.offsetAlongWallMeters === undefined) continue;
+      const seg = getWallEndpoints(op.wallIndex);
+      if (!seg) continue;
+      const dx = seg.p2[0] - seg.p1[0];
+      const dz = seg.p2[1] - seg.p1[1];
+      const wallLen = Math.hypot(dx, dz);
+      if (wallLen < 0.05) continue;
+
+      const s0 = Math.max(0, Math.min(wallLen, op.offsetAlongWallMeters));
+      const s1 = Math.max(s0 + 0.05, Math.min(wallLen, s0 + op.widthMeters));
+      const x0 = toX(seg.p1[0] + (dx / wallLen) * s0);
+      const y0 = toY(seg.p1[1] + (dz / wallLen) * s0);
+      const x1 = toX(seg.p1[0] + (dx / wallLen) * s1);
+      const y1 = toY(seg.p1[1] + (dz / wallLen) * s1);
+
+      ctx.save();
+      ctx.strokeStyle = op.type === 'door' ? '#f59e0b' : '#38bdf8';
+      ctx.lineWidth = this.isExpanded ? 4.5 : 3;
+      if (op.type === 'door') {
+        ctx.setLineDash([4, 2]);
+      }
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
@@ -197,9 +326,12 @@ export class MiniMap {
     reticlePos: THREE.Vector3 | null,
     camera: THREE.Camera,
     unitSystem: UnitSystem = 'metric',
-    isSnapped: boolean = false
+    isSnapped: boolean = false,
+    furniture: FurnitureBox[] = [],
+    openings: WallOpening[] = []
   ): void {
     this.lastFloorPoints = floorPoints;
+    this.lastFurniture = furniture;
     const ctx = this.ctx;
     const w = this.canvas.width;
     const h = this.canvas.height;
@@ -269,7 +401,7 @@ export class MiniMap {
       }
     }
 
-    // 3. Floor Polygon Fill
+    // 3. Floor Polygon Fill & Furniture Silhouettes
     if (floorPoints.length >= 3) {
       ctx.beginPath();
       ctx.moveTo(toCanvasX(floorPoints[0].x), toCanvasY(floorPoints[0].z));
@@ -281,7 +413,9 @@ export class MiniMap {
       ctx.fill();
     }
 
-    // 4. Solid Wall Lines & Expanded Labels
+    this.drawFurnitureBoxes2D(furniture, toCanvasX, toCanvasY, scale, this.isExpanded);
+
+    // 4. Solid Wall Lines, Positioned Openings & Expanded Labels
     if (floorPoints.length >= 2) {
       ctx.strokeStyle = '#00f2fe';
       ctx.lineWidth = this.isExpanded ? 3 : 2;
@@ -294,6 +428,19 @@ export class MiniMap {
         ctx.lineTo(toCanvasX(floorPoints[0].x), toCanvasY(floorPoints[0].z));
       }
       ctx.stroke();
+
+      if (isClosed && floorPoints.length >= 3 && openings.length > 0) {
+        this.drawWallOpenings2D(
+          openings,
+          (wi) => {
+            const p1 = floorPoints[wi];
+            const p2 = floorPoints[(wi + 1) % floorPoints.length];
+            return p1 && p2 ? { p1: [p1.x, p1.z], p2: [p2.x, p2.z] } : null;
+          },
+          toCanvasX,
+          toCanvasY
+        );
+      }
 
       if (this.isExpanded) {
         ctx.fillStyle = '#f8fafc';
@@ -423,14 +570,18 @@ export class MiniMap {
   }
 
   /**
-   * Render live Auto Scan 2D radar: walked camera trail, confidence-colored walls, and camera cone.
+   * Render live Auto Scan 2D radar: walked camera trail, confidence-colored walls, furniture, openings, and camera cone.
    */
   public renderAutoScan(
     shell: ShellEstimate | null,
     cameraPathXZ: Float32Array,
     camera: THREE.Camera,
-    unitSystem: UnitSystem = 'metric'
+    unitSystem: UnitSystem = 'metric',
+    furniture: FurnitureBox[] = [],
+    openings: WallOpening[] = []
   ): void {
+    this.lastFloorPoints = [];
+    this.lastFurniture = [];
     const ctx = this.ctx;
     const w = this.canvas.width;
     const h = this.canvas.height;
@@ -499,7 +650,7 @@ export class MiniMap {
       ctx.stroke();
     }
 
-    // Detected shell fill + confidence-colored walls
+    // Detected shell fill + furniture + confidence-colored walls + openings
     if (shell && shell.valid && shell.cornersXZ.length >= 3) {
       ctx.beginPath();
       ctx.moveTo(toX(shell.cornersXZ[0][0]), toY(shell.cornersXZ[0][1]));
@@ -509,6 +660,8 @@ export class MiniMap {
       ctx.closePath();
       ctx.fillStyle = 'rgba(0, 242, 254, 0.12)';
       ctx.fill();
+
+      this.drawFurnitureBoxes2D(furniture, toX, toY, scale, this.isExpanded);
 
       const wallColorMap = {
         low: '#ef4444',
@@ -522,6 +675,18 @@ export class MiniMap {
         ctx.moveTo(toX(wall.p1[0]), toY(wall.p1[1]));
         ctx.lineTo(toX(wall.p2[0]), toY(wall.p2[1]));
         ctx.stroke();
+      }
+
+      if (openings.length > 0) {
+        this.drawWallOpenings2D(
+          openings,
+          (wi) => {
+            const wSeg = shell.walls[wi];
+            return wSeg ? { p1: wSeg.p1, p2: wSeg.p2 } : null;
+          },
+          toX,
+          toY
+        );
       }
     }
 

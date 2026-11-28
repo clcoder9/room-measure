@@ -1,5 +1,31 @@
 export type WallConfidenceLevel = 'low' | 'medium' | 'good';
 
+export interface WallOpening {
+  id: string;
+  type: 'door' | 'window';
+  label: string;
+  widthMeters: number;
+  heightMeters: number;
+  wallIndex?: number;
+  offsetAlongWallMeters?: number;
+  sillHeightMeters?: number;
+  source?: 'manual' | 'auto';
+  confidence?: number;
+}
+
+export interface FurnitureBox {
+  id: string;
+  label: string;
+  centerXZ: [number, number];
+  widthMeters: number;
+  depthMeters: number;
+  heightMeters: number;
+  floorY: number;
+  yawRad: number;
+  source: 'auto' | 'manual';
+  confidence?: number;
+}
+
 export interface DetectedWallSegment {
   index: number;
   p1: [number, number];
@@ -65,6 +91,8 @@ export type WorkerOutMessage = {
   type: 'SCAN_UPDATE';
   shell: ShellEstimate;
   stats: ScanStats;
+  furniture: FurnitureBox[];
+  openings: WallOpening[];
   previewPositions: Float32Array;
   previewColors: Float32Array;
   previewCount: number;

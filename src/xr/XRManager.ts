@@ -623,6 +623,8 @@ export class XRManager {
 
     if (frame && this.xrHitTestSource && this.xrRefSpace) {
       const hitTestResults = frame.getHitTestResults(this.xrHitTestSource);
+      const isMarkingOpening =
+        !this.spikeModeActive && !this.autoScanActive && this.roomManager.isMarkingOpening();
       const isCeilingMode = this.roomManager.getState() === 'MEASURING_CEILING';
       const floorPoints = this.roomManager.getFloorPoints();
       const avgFloorY = calculateAverageFloorHeight(floorPoints);
@@ -630,7 +632,29 @@ export class XRManager {
       let resolvedReticle = false;
       let rawHitWorldPos: THREE.Vector3 | null = null;
 
-      if (hitTestResults.length > 0) {
+      if (isMarkingOpening && floorPoints.length >= 3) {
+        const camWorldPos = new THREE.Vector3();
+        const camForward = new THREE.Vector3();
+        const xrCam = this.renderer.xr.getCamera();
+        xrCam.getWorldPosition(camWorldPos);
+        xrCam.getWorldDirection(camForward);
+        const viewerRay = new THREE.Ray(camWorldPos, camForward);
+        const wallHit = this.roomManager.projectRayToWalls(viewerRay);
+        if (wallHit) {
+          const p1 = floorPoints[wallHit.wallIndex];
+          const p2 = floorPoints[(wallHit.wallIndex + 1) % floorPoints.length];
+          const dx = p2.x - p1.x;
+          const dz = p2.z - p1.z;
+          const len = Math.hypot(dx, dz) || 1;
+          const normal = new THREE.Vector3(-dz / len, 0, dx / len);
+          this.reticle.setWorldPose(wallHit.worldPos, normal);
+          this.reticle.setSnapped(true);
+          this.roomManager.updateOpeningMarkLive(wallHit);
+          resolvedReticle = true;
+        } else {
+          this.roomManager.updateOpeningMarkLive(null);
+        }
+      } else if (hitTestResults.length > 0) {
         const hit = hitTestResults[0];
         const pose = hit.getPose(this.xrRefSpace);
 
@@ -659,7 +683,7 @@ export class XRManager {
       }
 
       // Vertical Wall-Ray Projection fallback for featureless ceilings
-      if (!resolvedReticle && isCeilingMode && floorPoints.length > 0) {
+      if (!resolvedReticle && !isMarkingOpening && isCeilingMode && floorPoints.length > 0) {
         const camWorldPos = new THREE.Vector3();
         const camForward = new THREE.Vector3();
         const xrCam = this.renderer.xr.getCamera();
@@ -802,6 +826,18 @@ export class XRManager {
   private onXRSelect(): void {
     if (this.spikeModeActive || this.autoScanActive) return;
     if (this.isInteractionBlocked?.()) return;
+    if (this.roomManager.isMarkingOpening()) {
+      const camPos = new THREE.Vector3();
+      const camDir = new THREE.Vector3();
+      const xrCam = this.renderer.xr.getCamera();
+      xrCam.getWorldPosition(camPos);
+      xrCam.getWorldDirection(camDir);
+      const hit = this.roomManager.projectRayToWalls(new THREE.Ray(camPos, camDir));
+      if (hit) {
+        this.roomManager.pinOpeningWallHit(hit);
+      }
+      return;
+    }
     if (this.reticle.visible) {
       const pos = this.reticle.getWorldPositionTarget();
       this.roomManager.pinCurrentPosition(pos);
@@ -812,6 +848,24 @@ export class XRManager {
    * Explicit pin action triggered from UI HUD button
    */
   public pinReticlePoint(): boolean {
+    if (this.roomManager.isMarkingOpening()) {
+      const ray = this.renderer.xr.isPresenting
+        ? (() => {
+            const p = new THREE.Vector3();
+            const d = new THREE.Vector3();
+            const xrCam = this.renderer.xr.getCamera();
+            xrCam.getWorldPosition(p);
+            xrCam.getWorldDirection(d);
+            return new THREE.Ray(p, d);
+          })()
+        : this.raycaster.ray;
+      const hit = this.roomManager.projectRayToWalls(ray);
+      if (hit) {
+        this.roomManager.pinOpeningWallHit(hit);
+        return true;
+      }
+      return false;
+    }
     if (this.reticle.visible) {
       const pos = this.isSimulatedMode
         ? this.reticle.position.clone()
@@ -923,6 +977,26 @@ export class XRManager {
       }
     }
 
+    if (this.roomManager.isMarkingOpening()) {
+      const floorPoints = this.roomManager.getFloorPoints();
+      const wallHit = this.roomManager.projectRayToWalls(this.raycaster.ray);
+      if (wallHit && floorPoints.length >= 3) {
+        const p1 = floorPoints[wallHit.wallIndex];
+        const p2 = floorPoints[(wallHit.wallIndex + 1) % floorPoints.length];
+        const dx = p2.x - p1.x;
+        const dz = p2.z - p1.z;
+        const len = Math.hypot(dx, dz) || 1;
+        const normal = new THREE.Vector3(-dz / len, 0, dx / len);
+        this.reticle.setWorldPose(wallHit.worldPos, normal);
+        this.reticle.setSnapped(true);
+        this.roomManager.updateOpeningMarkLive(wallHit);
+        return;
+      }
+      this.roomManager.updateOpeningMarkLive(null);
+      this.reticle.visible = false;
+      return;
+    }
+
     if (this.roomManager.getState() === 'MEASURING_CEILING') {
       const floorPoints = this.roomManager.getFloorPoints();
       const avgFloorY = calculateAverageFloorHeight(floorPoints);
@@ -979,9 +1053,14 @@ export class XRManager {
       e.clientY - this.simPointerDownPos.y
     );
     // Distinguish quick click (< 6px) from OrbitControls drag
-    if (dragDist < 6 && this.reticle.visible) {
+    if (dragDist < 6) {
       this.updateSimulatorReticleFromNDC(this.simLastNDC);
-      this.roomManager.pinCurrentPosition(this.reticle.position.clone());
+      if (this.roomManager.isMarkingOpening()) {
+        const hit = this.roomManager.projectRayToWalls(this.raycaster.ray);
+        if (hit) this.roomManager.pinOpeningWallHit(hit);
+      } else if (this.reticle.visible) {
+        this.roomManager.pinCurrentPosition(this.reticle.position.clone());
+      }
     }
   }
 

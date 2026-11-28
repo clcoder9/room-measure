@@ -3,9 +3,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { UnitSystem } from '../measurement/math';
 import {
   DepthFramePayload,
+  FurnitureBox,
   ScanStats,
   SerializedPlaneInput,
   ShellEstimate,
+  WallOpening,
   WorkerInMessage,
   WorkerOutMessage
 } from './ScanTypes';
@@ -29,10 +31,17 @@ export class ScanController {
 
   private latestShell: ShellEstimate | null = null;
   private latestStats: ScanStats | null = null;
+  private latestFurniture: FurnitureBox[] = [];
+  private latestOpenings: WallOpening[] = [];
   private latestPathXZ: Float32Array = new Float32Array(0);
   private unitSystem: UnitSystem = 'metric';
 
-  private onUpdateCallback?: (shell: ShellEstimate, stats: ScanStats) => void;
+  private onUpdateCallback?: (
+    shell: ShellEstimate,
+    stats: ScanStats,
+    furniture: FurnitureBox[],
+    openings: WallOpening[]
+  ) => void;
 
   // Scratch objects
   private raycaster = new THREE.Raycaster();
@@ -48,6 +57,8 @@ export class ScanController {
       if (e.data.type !== 'SCAN_UPDATE' || !this.active) return;
       this.latestShell = e.data.shell;
       this.latestStats = e.data.stats;
+      this.latestFurniture = e.data.furniture ?? [];
+      this.latestOpenings = e.data.openings ?? [];
       this.latestPathXZ = e.data.cameraPathXZ;
 
       this.visuals.updatePointCloud(
@@ -55,8 +66,18 @@ export class ScanController {
         e.data.previewColors,
         e.data.previewCount
       );
-      this.visuals.updateShell(e.data.shell, this.unitSystem);
-      this.onUpdateCallback?.(e.data.shell, e.data.stats);
+      this.visuals.updateShell(
+        e.data.shell,
+        this.unitSystem,
+        this.latestFurniture,
+        this.latestOpenings
+      );
+      this.onUpdateCallback?.(
+        e.data.shell,
+        e.data.stats,
+        this.latestFurniture,
+        this.latestOpenings
+      );
     };
 
     window.addEventListener('keydown', (e) => {
@@ -67,14 +88,26 @@ export class ScanController {
     });
   }
 
-  public setOnUpdate(cb: (shell: ShellEstimate, stats: ScanStats) => void): void {
+  public setOnUpdate(
+    cb: (
+      shell: ShellEstimate,
+      stats: ScanStats,
+      furniture: FurnitureBox[],
+      openings: WallOpening[]
+    ) => void
+  ): void {
     this.onUpdateCallback = cb;
   }
 
   public setUnitSystem(unit: UnitSystem): void {
     this.unitSystem = unit;
     if (this.active && this.latestShell) {
-      this.visuals.updateShell(this.latestShell, this.unitSystem);
+      this.visuals.updateShell(
+        this.latestShell,
+        this.unitSystem,
+        this.latestFurniture,
+        this.latestOpenings
+      );
     }
   }
 
@@ -107,6 +140,8 @@ export class ScanController {
   public reset(): void {
     this.latestShell = null;
     this.latestStats = null;
+    this.latestFurniture = [];
+    this.latestOpenings = [];
     this.latestPathXZ = new Float32Array(0);
     this.lastSampleTime = 0;
     this.visuals.reset();
@@ -120,6 +155,14 @@ export class ScanController {
 
   public getLatestStats(): ScanStats | null {
     return this.latestStats;
+  }
+
+  public getLatestFurniture(): FurnitureBox[] {
+    return this.latestFurniture;
+  }
+
+  public getLatestOpenings(): WallOpening[] {
+    return this.latestOpenings;
   }
 
   public getLatestCameraPathXZ(): Float32Array {

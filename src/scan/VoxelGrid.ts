@@ -2,7 +2,9 @@ import type { DepthFramePayload, SerializedPlaneInput } from './ScanTypes';
 
 export const VOXEL_SIZE = 0.05;
 export const FREE_CELL_SIZE = 0.10;
+export const PASS_CELL_SIZE = 0.12;
 export const MAX_VOXELS = 60_000;
+export const MAX_PASS_CELLS = 45_000;
 
 const GRID_COLS = 48;
 const GRID_ROWS = 36;
@@ -32,6 +34,7 @@ export interface FreeCell {
   kx: number;
   kz: number;
   freeHits: number;
+  lowFreeHits: number;
   traversed: boolean;
 }
 
@@ -53,6 +56,7 @@ export function popcount32(n: number): number {
 export class VoxelGrid {
   private voxels = new Map<number, VoxelCell>();
   private freeCells = new Map<number, FreeCell>();
+  private passCells = new Map<number, number>();
   private ceilingSeamBins = new Map<number, number>(); // 2cm Y bin -> hit count
   private latestPlanes: SerializedPlaneInput[] = [];
   private cameraPathXZ: number[] = [];
@@ -74,6 +78,7 @@ export class VoxelGrid {
   public reset(): void {
     this.voxels.clear();
     this.freeCells.clear();
+    this.passCells.clear();
     this.ceilingSeamBins.clear();
     this.latestPlanes = [];
     this.cameraPathXZ = [];
@@ -113,6 +118,25 @@ export class VoxelGrid {
 
   public getFreeCells(): IterableIterator<FreeCell> {
     return this.freeCells.values();
+  }
+
+  public getFreeCellAtWorld(x: number, z: number): FreeCell | undefined {
+    const kx = Math.floor(x / FREE_CELL_SIZE);
+    const kz = Math.floor(z / FREE_CELL_SIZE);
+    return this.freeCells.get(hashFreeKey(kx, kz));
+  }
+
+  public getPassThroughHits(x: number, y: number, z: number): number {
+    const kx = Math.floor(x / PASS_CELL_SIZE);
+    const ky = Math.floor(y / PASS_CELL_SIZE);
+    const kz = Math.floor(z / PASS_CELL_SIZE);
+    if (kx < -2048 || kx > 2047 || ky < -2047 || ky > 2046 || kz < -2048 || kz > 2047) {
+      return 0;
+    }
+    const c = this.passCells.get(hashVoxelKey(kx, ky, kz)) ?? 0;
+    const up = this.passCells.get(hashVoxelKey(kx, ky + 1, kz)) ?? 0;
+    const dn = this.passCells.get(hashVoxelKey(kx, ky - 1, kz)) ?? 0;
+    return Math.max(c, up, dn);
   }
 
   public getCeilingSeamBins(): Map<number, number> {
@@ -163,8 +187,15 @@ export class VoxelGrid {
         if (cell) {
           cell.traversed = true;
           cell.freeHits = Math.max(cell.freeHits, 2);
+          cell.lowFreeHits = Math.max(cell.lowFreeHits, 2);
         } else {
-          this.freeCells.set(key, { kx, kz, freeHits: 2, traversed: true });
+          this.freeCells.set(key, {
+            kx,
+            kz,
+            freeHits: 2,
+            lowFreeHits: 2,
+            traversed: true
+          });
         }
       }
     }
@@ -332,8 +363,6 @@ export class VoxelGrid {
           runTopRow = r;
         } else {
           if (runLen >= 4 && runTopRow >= 5) {
-            // Note: above1 is guaranteed to be a valid wall pixel (passed dU check for runTopRow);
-            // the ceiling/hole boundary starts between above1 (runTopRow - 1) and above2 (runTopRow - 2).
             const above1 = (runTopRow - 1) * GRID_COLS + c;
             const above2 = (runTopRow - 2) * GRID_COLS + c;
             const above3 = (runTopRow - 3) * GRID_COLS + c;
@@ -371,6 +400,7 @@ export class VoxelGrid {
     const camZ = payload.cameraPos[2];
     const minFreeY = refFloorY + 0.18;
     const maxFreeY = refFloorY + 2.35;
+    const maxLowFreeY = refFloorY + 0.85;
 
     for (let r = 1; r < GRID_ROWS - 1; r += 2) {
       for (let c = 1; c < GRID_COLS - 1; c += 2) {
@@ -405,11 +435,83 @@ export class VoxelGrid {
           const kx = Math.floor(xt / FREE_CELL_SIZE);
           const kz = Math.floor(zt / FREE_CELL_SIZE);
           const fkey = hashFreeKey(kx, kz);
+          const isLow = yt <= maxLowFreeY;
           const cell = this.freeCells.get(fkey);
           if (cell) {
             cell.freeHits++;
+            if (isLow) cell.lowFreeHits++;
           } else {
-            this.freeCells.set(fkey, { kx, kz, freeHits: 1, traversed: false });
+            this.freeCells.set(fkey, {
+              kx,
+              kz,
+              freeHits: 1,
+              lowFreeHits: isLow ? 1 : 0,
+              traversed: false
+            });
+          }
+        }
+      }
+    }
+
+    // 5. 3D ray pass-through marching (includes SHOOT_THROUGH window glass rays, stops 18cm before solids)
+    const minPassY = refFloorY + 0.05;
+    const maxPassY = refFloorY + 2.65;
+    for (let r = 1; r < GRID_ROWS - 1; r += 3) {
+      const v = GRID_UV_MIN + (r / (GRID_ROWS - 1)) * (GRID_UV_MAX - GRID_UV_MIN);
+      const ndcY = 1 - 2 * v;
+      for (let c = 1; c < GRID_COLS - 1; c += 3) {
+        const idx = r * GRID_COLS + c;
+        const d = this.gridD[idx];
+        if (d < 0.45) continue;
+        const isShootThrough = d === SHOOT_THROUGH;
+        if (!isShootThrough && d > 5.2) continue;
+
+        const u = GRID_UV_MIN + (c / (GRID_COLS - 1)) * (GRID_UV_MAX - GRID_UV_MIN);
+        const ndcX = 2 * u - 1;
+        const vx1 = (ndcX + p8) / p0;
+        const vy1 = (ndcY + p9) / p5;
+        const vz1 = -1;
+
+        const dx = W[0] * vx1 + W[4] * vy1 + W[8] * vz1;
+        const dy = W[1] * vx1 + W[5] * vy1 + W[9] * vz1;
+        const dz = W[2] * vx1 + W[6] * vy1 + W[10] * vz1;
+        const dirLen = Math.hypot(dx, dy, dz);
+        if (dirLen < 1e-6) continue;
+        const invLen = 1 / dirLen;
+        const dirX = dx * invLen;
+        const dirY = dy * invLen;
+        const dirZ = dz * invLen;
+        if (Math.abs(dirY) >= 0.65) continue;
+
+        let maxT = 6.2;
+        if (!isShootThrough) {
+          const xv = this.gridVx[idx];
+          const yv = this.gridVy[idx];
+          const zv = this.gridVz[idx];
+          const wx = W[0] * xv + W[4] * yv + W[8] * zv + W[12];
+          const wy = W[1] * xv + W[5] * yv + W[9] * zv + W[13];
+          const wz = W[2] * xv + W[6] * yv + W[10] * zv + W[14];
+          maxT = Math.hypot(wx - camX, wy - camY, wz - camZ) - 0.18;
+        }
+        if (maxT < 0.45) continue;
+
+        for (let t = 0.40; t <= maxT; t += PASS_CELL_SIZE) {
+          const yt = camY + dirY * t;
+          if (yt < minPassY || yt > maxPassY) continue;
+          const xt = camX + dirX * t;
+          const zt = camZ + dirZ * t;
+          const pkx = Math.floor(xt / PASS_CELL_SIZE);
+          const pky = Math.floor(yt / PASS_CELL_SIZE);
+          const pkz = Math.floor(zt / PASS_CELL_SIZE);
+          if (pkx < -2048 || pkx > 2047 || pky < -2047 || pky > 2046 || pkz < -2048 || pkz > 2047) {
+            continue;
+          }
+          const pkey = hashVoxelKey(pkx, pky, pkz);
+          const curHits = this.passCells.get(pkey);
+          if (curHits !== undefined) {
+            if (curHits < 65535) this.passCells.set(pkey, curHits + 1);
+          } else if (this.passCells.size < MAX_PASS_CELLS) {
+            this.passCells.set(pkey, 1);
           }
         }
       }
@@ -512,7 +614,11 @@ export class VoxelGrid {
         cr = 0.0;
         cg = 0.95;
         cb = 1.0;
-      } else if (ceilingY !== null && Math.abs(py - ceilingY) < 0.12 && ny < -0.65) {
+      } else if (
+        (ny < -0.30 && py > floorY + 1.0) ||
+        (ceilingY !== null && Math.abs(py - ceilingY) < 0.12 && ny < -0.65)
+      ) {
+        // Violet for flat AND inclined ceilings so sloped roofs are distinguished from furniture
         cr = 0.68;
         cg = 0.42;
         cb = 1.0;

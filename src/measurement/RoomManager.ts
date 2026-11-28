@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { FurnitureBox, WallOpening } from '../scan/ScanTypes';
 import {
   UnitSystem,
   calculateHorizontalDistance,
@@ -15,6 +16,8 @@ import {
 } from './math';
 import { MeasurementVisuals } from './MeasurementVisuals';
 
+export type { FurnitureBox, WallOpening } from '../scan/ScanTypes';
+
 export type MeasurementState =
   | 'SCAN_FLOOR'
   | 'MEASURING_FLOOR'
@@ -22,12 +25,18 @@ export type MeasurementState =
   | 'MEASURING_CEILING'
   | 'COMPLETED';
 
-export interface WallOpening {
-  id: string;
+export interface OpeningWallHit {
+  wallIndex: number;
+  alongM: number;
+  heightM: number;
+  worldPos: THREE.Vector3;
+}
+
+export interface OpeningMarkState {
+  active: boolean;
   type: 'door' | 'window';
-  label: string;
-  widthMeters: number;
-  heightMeters: number;
+  firstHit: OpeningWallHit | null;
+  liveHit: OpeningWallHit | null;
 }
 
 export interface LiveSnapState {
@@ -43,6 +52,9 @@ export interface RoomMetrics {
   pointCount: number;
   currentSegmentLength: number;
   floorArea: number; // m²
+  furnitureFootprintArea: number; // m²
+  freeFloorArea: number; // m²
+  furnitureCount: number;
   perimeter: number; // m
   ceilingHeight: number; // m
   volume: number; // m³
@@ -61,6 +73,8 @@ export interface RoomExportData {
   unitSystem: UnitSystem;
   metrics: {
     floorAreaSqMeters: number;
+    furnitureFootprintSqMeters: number;
+    freeFloorAreaSqMeters: number;
     floorPerimeterMeters: number;
     ceilingHeightMeters: number;
     roomVolumeCuMeters: number;
@@ -69,6 +83,8 @@ export interface RoomExportData {
     netWallAreaSqMeters: number;
     formatted: {
       floorArea: string;
+      furnitureFootprintArea: string;
+      freeFloorArea: string;
       floorPerimeter: string;
       ceilingHeight: string;
       roomVolume: string;
@@ -79,6 +95,7 @@ export interface RoomExportData {
   floorCoordinates: { index: number; x: number; y: number; z: number }[];
   ceilingCoordinate: { x: number; y: number; z: number } | null;
   openings: WallOpening[];
+  furniture: FurnitureBox[];
 }
 
 export interface SavedRoomRecord {
@@ -88,8 +105,10 @@ export interface SavedRoomRecord {
   floorCoordinates: { x: number; y: number; z: number }[];
   ceilingCoordinate: { x: number; y: number; z: number } | null;
   openings: WallOpening[];
+  furniture?: FurnitureBox[];
   metrics: {
     floorAreaSqMeters: number;
+    freeFloorAreaSqMeters?: number;
     floorPerimeterMeters: number;
     ceilingHeightMeters: number;
     roomVolumeCuMeters: number;
@@ -108,6 +127,13 @@ export class RoomManager {
   private ceilingPoint: THREE.Vector3 | null = null;
   private isFloorClosed: boolean = false;
   private openings: WallOpening[] = [];
+  private furniture: FurnitureBox[] = [];
+  private openingMarkState: OpeningMarkState = {
+    active: false,
+    type: 'door',
+    firstHit: null,
+    liveHit: null
+  };
   private unitSystem: UnitSystem = 'metric';
   private orthoSnapEnabled: boolean = true;
   private liveSnapState: LiveSnapState = {
@@ -213,23 +239,280 @@ export class RoomManager {
     type: 'door' | 'window',
     widthMeters: number,
     heightMeters: number,
-    label?: string
+    label?: string,
+    extras?: {
+      wallIndex?: number;
+      offsetAlongWallMeters?: number;
+      sillHeightMeters?: number;
+      source?: 'manual' | 'auto';
+      confidence?: number;
+    }
   ): WallOpening {
     const opening: WallOpening = {
       id: `op-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       type,
       label: label || (type === 'door' ? 'Door' : 'Window'),
       widthMeters: Math.max(0.1, widthMeters),
-      heightMeters: Math.max(0.1, heightMeters)
+      heightMeters: Math.max(0.1, heightMeters),
+      wallIndex: extras?.wallIndex,
+      offsetAlongWallMeters: extras?.offsetAlongWallMeters,
+      sillHeightMeters: extras?.sillHeightMeters,
+      source: extras?.source ?? 'manual',
+      confidence: extras?.confidence
     };
     this.openings.push(opening);
+    this.syncVisuals();
     this.notifyState();
     return opening;
   }
 
+  public updateOpening(id: string, patch: Partial<Omit<WallOpening, 'id'>>): void {
+    const idx = this.openings.findIndex((o) => o.id === id);
+    if (idx === -1) return;
+    const prev = this.openings[idx];
+    this.openings[idx] = {
+      ...prev,
+      ...patch,
+      widthMeters: Math.max(0.1, patch.widthMeters ?? prev.widthMeters),
+      heightMeters: Math.max(0.1, patch.heightMeters ?? prev.heightMeters)
+    };
+    this.syncVisuals();
+    this.notifyState();
+  }
+
   public removeOpening(id: string): void {
     this.openings = this.openings.filter((o) => o.id !== id);
+    this.syncVisuals();
     this.notifyState();
+  }
+
+  public getFurniture(): FurnitureBox[] {
+    return this.furniture.map((f) => ({
+      ...f,
+      centerXZ: [f.centerXZ[0], f.centerXZ[1]]
+    }));
+  }
+
+  public addFurniture(box: Omit<FurnitureBox, 'id'>): FurnitureBox {
+    const item: FurnitureBox = {
+      ...box,
+      id: `furn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      centerXZ: [box.centerXZ[0], box.centerXZ[1]],
+      widthMeters: Math.max(0.15, box.widthMeters),
+      depthMeters: Math.max(0.15, box.depthMeters),
+      heightMeters: Math.max(0.15, box.heightMeters)
+    };
+    this.furniture.push(item);
+    this.syncVisuals();
+    this.notifyState();
+    return item;
+  }
+
+  public updateFurniture(id: string, patch: Partial<Omit<FurnitureBox, 'id'>>): void {
+    const idx = this.furniture.findIndex((f) => f.id === id);
+    if (idx === -1) return;
+    const prev = this.furniture[idx];
+    this.furniture[idx] = {
+      ...prev,
+      ...patch,
+      centerXZ: patch.centerXZ ? [patch.centerXZ[0], patch.centerXZ[1]] : prev.centerXZ,
+      widthMeters: Math.max(0.15, patch.widthMeters ?? prev.widthMeters),
+      depthMeters: Math.max(0.15, patch.depthMeters ?? prev.depthMeters),
+      heightMeters: Math.max(0.15, patch.heightMeters ?? prev.heightMeters)
+    };
+    this.syncVisuals();
+    this.notifyState();
+  }
+
+  public rotateFurniture90(id: string): void {
+    const item = this.furniture.find((f) => f.id === id);
+    if (!item) return;
+    item.yawRad = item.yawRad + Math.PI * 0.5;
+    item.source = 'manual';
+    this.syncVisuals();
+    this.notifyState();
+  }
+
+  public removeFurniture(id: string): void {
+    this.furniture = this.furniture.filter((f) => f.id !== id);
+    this.syncVisuals();
+    this.notifyState();
+  }
+
+  public isMarkingOpening(): boolean {
+    return this.openingMarkState.active;
+  }
+
+  public getOpeningMarkState(): OpeningMarkState {
+    return {
+      active: this.openingMarkState.active,
+      type: this.openingMarkState.type,
+      firstHit: this.openingMarkState.firstHit
+        ? {
+            ...this.openingMarkState.firstHit,
+            worldPos: this.openingMarkState.firstHit.worldPos.clone()
+          }
+        : null,
+      liveHit: this.openingMarkState.liveHit
+        ? {
+            ...this.openingMarkState.liveHit,
+            worldPos: this.openingMarkState.liveHit.worldPos.clone()
+          }
+        : null
+    };
+  }
+
+  public startMarkingOpening(type: 'door' | 'window'): boolean {
+    if (!this.isFloorClosed || this.floorPoints.length < 3) {
+      this.onValidationErrorCallback?.('Close a floor polygon first before marking wall openings');
+      return false;
+    }
+    this.openingMarkState = {
+      active: true,
+      type,
+      firstHit: null,
+      liveHit: null
+    };
+    this.visuals.updateOpeningMarkPreview(this.floorPoints, this.openingMarkState, this.unitSystem);
+    this.notifyState();
+    return true;
+  }
+
+  public cancelMarkingOpening(): void {
+    if (!this.openingMarkState.active) return;
+    this.openingMarkState = {
+      active: false,
+      type: 'door',
+      firstHit: null,
+      liveHit: null
+    };
+    this.visuals.updateOpeningMarkPreview(this.floorPoints, this.openingMarkState, this.unitSystem);
+    this.notifyState();
+  }
+
+  public projectRayToWalls(ray: THREE.Ray): OpeningWallHit | null {
+    if (!this.isFloorClosed || this.floorPoints.length < 3) return null;
+    const floorY = calculateAverageFloorHeight(this.floorPoints);
+    const maxWallH = this.ceilingPoint
+      ? Math.max(2.0, Math.abs(this.ceilingPoint.y - floorY) + 0.15)
+      : 3.4;
+
+    const n = this.floorPoints.length;
+    let bestHit: OpeningWallHit | null = null;
+    let bestDistSq = Infinity;
+
+    for (let i = 0; i < n; i++) {
+      const p1 = this.floorPoints[i];
+      const p2 = this.floorPoints[(i + 1) % n];
+      const dx = p2.x - p1.x;
+      const dz = p2.z - p1.z;
+      const segLen = Math.hypot(dx, dz);
+      if (segLen < 0.05) continue;
+
+      const normal = new THREE.Vector3(-dz / segLen, 0, dx / segLen);
+      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, p1);
+      const hit = new THREE.Vector3();
+      if (!ray.intersectPlane(plane, hit)) continue;
+
+      const toHit = hit.clone().sub(ray.origin);
+      if (toHit.dot(ray.direction) <= 0.15) continue;
+
+      const alongM = ((hit.x - p1.x) * dx + (hit.z - p1.z) * dz) / segLen;
+      if (alongM < -0.08 || alongM > segLen + 0.08) continue;
+
+      const heightM = hit.y - floorY;
+      if (heightM < -0.15 || heightM > maxWallH) continue;
+
+      const clampedAlong = Math.max(0, Math.min(segLen, alongM));
+      const clampedH = Math.max(0, Math.min(maxWallH, heightM));
+      const clampedPos = new THREE.Vector3(
+        p1.x + (dx / segLen) * clampedAlong,
+        floorY + clampedH,
+        p1.z + (dz / segLen) * clampedAlong
+      );
+
+      const dSq = toHit.lengthSq();
+      if (dSq < bestDistSq) {
+        bestDistSq = dSq;
+        bestHit = {
+          wallIndex: i,
+          alongM: clampedAlong,
+          heightM: clampedH,
+          worldPos: clampedPos
+        };
+      }
+    }
+
+    return bestHit;
+  }
+
+  public updateOpeningMarkLive(hit: OpeningWallHit | null): void {
+    if (!this.openingMarkState.active) return;
+    this.openingMarkState.liveHit = hit
+      ? { ...hit, worldPos: hit.worldPos.clone() }
+      : null;
+    this.visuals.updateOpeningMarkPreview(this.floorPoints, this.openingMarkState, this.unitSystem);
+  }
+
+  public pinOpeningWallHit(hit: OpeningWallHit): { completed: boolean; opening?: WallOpening } {
+    if (!this.openingMarkState.active) {
+      return { completed: false };
+    }
+
+    if (!this.openingMarkState.firstHit) {
+      this.openingMarkState.firstHit = { ...hit, worldPos: hit.worldPos.clone() };
+      this.openingMarkState.liveHit = { ...hit, worldPos: hit.worldPos.clone() };
+      this.triggerHaptic(25);
+      this.visuals.updateOpeningMarkPreview(this.floorPoints, this.openingMarkState, this.unitSystem);
+      this.notifyState();
+      return { completed: false };
+    }
+
+    const first = this.openingMarkState.firstHit;
+    if (hit.wallIndex !== first.wallIndex) {
+      this.onValidationErrorCallback?.(
+        `Aim at Wall #${first.wallIndex + 1} for opposite corner`
+      );
+      return { completed: false };
+    }
+
+    const widthM = Math.abs(hit.alongM - first.alongM);
+    const minH = Math.min(first.heightM, hit.heightM);
+    const maxH = Math.max(first.heightM, hit.heightM);
+    const rawHeightM = maxH - minH;
+    if (widthM < 0.25 || rawHeightM < 0.25) {
+      this.onValidationErrorCallback?.('Move reticle diagonally across the opening (>= 25cm)');
+      return { completed: false };
+    }
+
+    const opType = this.openingMarkState.type;
+    const snapToFloor = opType === 'door' && minH <= 0.30;
+    const sillM = snapToFloor ? 0 : Math.round(minH * 100) / 100;
+    const heightM = Math.round((snapToFloor ? maxH : rawHeightM) * 100) / 100;
+    const offsetM = Math.round(Math.min(first.alongM, hit.alongM) * 100) / 100;
+    const wRounded = Math.round(widthM * 100) / 100;
+
+    this.openingMarkState = {
+      active: false,
+      type: 'door',
+      firstHit: null,
+      liveHit: null
+    };
+    this.triggerHaptic([30, 40, 30]);
+
+    const opening = this.addOpening(
+      opType,
+      wRounded,
+      heightM,
+      `${opType === 'door' ? 'Door' : 'Window'} (Wall #${first.wallIndex + 1})`,
+      {
+        wallIndex: first.wallIndex,
+        offsetAlongWallMeters: offsetM,
+        sillHeightMeters: sillM,
+        source: 'manual'
+      }
+    );
+    return { completed: true, opening };
   }
 
   public getLastPoint(): THREE.Vector3 | null {
@@ -381,22 +664,58 @@ export class RoomManager {
     if (index < 0 || index >= this.floorPoints.length) return;
     this.floorPoints[index].x = newX;
     this.floorPoints[index].z = newZ;
+
+    // Clamp positioned openings on affected wall segments
+    if (this.isFloorClosed && this.floorPoints.length >= 3) {
+      const n = this.floorPoints.length;
+      for (const op of this.openings) {
+        if (op.wallIndex === undefined) continue;
+        if (op.wallIndex === index || (op.wallIndex + 1) % n === index) {
+          const p1 = this.floorPoints[op.wallIndex];
+          const p2 = this.floorPoints[(op.wallIndex + 1) % n];
+          const wallLen = calculateHorizontalDistance(p1, p2);
+          if (op.widthMeters > wallLen) {
+            op.widthMeters = Math.max(0.2, Math.round(wallLen * 100) / 100);
+          }
+          if (op.offsetAlongWallMeters !== undefined) {
+            op.offsetAlongWallMeters = Math.max(
+              0,
+              Math.min(Math.max(0, wallLen - op.widthMeters), op.offsetAlongWallMeters)
+            );
+          }
+        }
+      }
+    }
+
     this.syncVisuals();
     this.notifyState();
   }
 
   /**
-   * Loads a room shell polygon and floor/ceiling elevations detected by Auto Scan.
+   * Loads a room shell polygon, floor/ceiling elevations, furniture silhouettes, and wall openings from Auto Scan.
    */
   public loadFromAutoScan(
     cornersXZ: [number, number][],
     floorY: number,
-    ceilingY: number | null
+    ceilingY: number | null,
+    furniture: FurnitureBox[] = [],
+    openings: WallOpening[] = []
   ): boolean {
     if (cornersXZ.length < 3) return false;
 
     this.floorPoints = cornersXZ.map(([x, z]) => new THREE.Vector3(x, floorY, z));
     this.isFloorClosed = true;
+    this.furniture = furniture.map((f) => ({
+      ...f,
+      centerXZ: [f.centerXZ[0], f.centerXZ[1]]
+    }));
+    this.openings = openings.map((o) => ({ ...o }));
+    this.openingMarkState = {
+      active: false,
+      type: 'door',
+      firstHit: null,
+      liveHit: null
+    };
     this.lastLiveDistance = 0;
     this.liveSnapState = {
       isSnappedToStart: false,
@@ -431,6 +750,17 @@ export class RoomManager {
    * Action: Undo last placed point
    */
   public undo(): void {
+    if (this.openingMarkState.active) {
+      if (this.openingMarkState.firstHit) {
+        this.openingMarkState.firstHit = null;
+        this.visuals.updateOpeningMarkPreview(this.floorPoints, this.openingMarkState, this.unitSystem);
+        this.notifyState();
+      } else {
+        this.cancelMarkingOpening();
+      }
+      return;
+    }
+
     this.lastLiveDistance = 0;
     if (this.state === 'COMPLETED') {
       this.ceilingPoint = null;
@@ -457,6 +787,13 @@ export class RoomManager {
     this.ceilingPoint = null;
     this.isFloorClosed = false;
     this.openings = [];
+    this.furniture = [];
+    this.openingMarkState = {
+      active: false,
+      type: 'door',
+      firstHit: null,
+      liveHit: null
+    };
     this.state = 'SCAN_FLOOR';
     this.lastLiveDistance = 0;
     this.liveSnapState = {
@@ -473,6 +810,11 @@ export class RoomManager {
    * Updates real-time preview connecting line from last point to reticle
    */
   public updateLiveReticle(reticlePos: THREE.Vector3 | null): void {
+    if (this.openingMarkState.active) {
+      this.visuals.updateLiveLine(null, null);
+      return;
+    }
+
     if (this.state === 'MEASURING_FLOOR' && this.floorPoints.length > 0 && reticlePos) {
       const resolved = this.resolveSnappedFloorPoint(reticlePos);
       this.liveSnapState = {
@@ -530,12 +872,80 @@ export class RoomManager {
       this.floorPoints,
       this.ceilingPoint,
       this.isFloorClosed,
+      this.unitSystem,
+      this.furniture,
+      this.openings
+    );
+    this.visuals.updateOpeningMarkPreview(
+      this.floorPoints,
+      this.openingMarkState,
       this.unitSystem
     );
   }
 
+  private calculateFurnitureFootprintArea(floorArea: number): number {
+    if (this.furniture.length === 0 || this.floorPoints.length < 3 || floorArea <= 0) {
+      return 0;
+    }
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const p of this.floorPoints) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.z < minZ) minZ = p.z;
+      if (p.z > maxZ) maxZ = p.z;
+    }
+
+    const cellSize = Math.max(0.05, Math.max(maxX - minX, maxZ - minZ) / 220);
+    const cols = Math.max(1, Math.ceil((maxX - minX) / cellSize));
+    const rows = Math.max(1, Math.ceil((maxZ - minZ) / cellSize));
+    const pts = this.floorPoints;
+    const n = pts.length;
+
+    let coveredCells = 0;
+    for (let r = 0; r < rows; r++) {
+      const z = minZ + (r + 0.5) * cellSize;
+      for (let c = 0; c < cols; c++) {
+        const x = minX + (c + 0.5) * cellSize;
+
+        let inPoly = false;
+        for (let i = 0, j = n - 1; i < n; j = i++) {
+          const xi = pts[i].x, zi = pts[i].z;
+          const xj = pts[j].x, zj = pts[j].z;
+          if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi || 1e-9) + xi) {
+            inPoly = !inPoly;
+          }
+        }
+        if (!inPoly) continue;
+
+        let inFurn = false;
+        for (let k = 0; k < this.furniture.length; k++) {
+          const f = this.furniture[k];
+          const dx = x - f.centerXZ[0];
+          const dz = z - f.centerXZ[1];
+          const cos = Math.cos(f.yawRad);
+          const sin = Math.sin(f.yawRad);
+          const lu = dx * cos + dz * sin;
+          const lv = -dx * sin + dz * cos;
+          if (Math.abs(lu) <= f.widthMeters * 0.5 && Math.abs(lv) <= f.depthMeters * 0.5) {
+            inFurn = true;
+            break;
+          }
+        }
+        if (inFurn) coveredCells++;
+      }
+    }
+
+    return Math.min(floorArea, Math.round(coveredCells * cellSize * cellSize * 100) / 100);
+  }
+
   public getMetrics(liveDistance: number = this.lastLiveDistance): RoomMetrics {
     const area = this.floorPoints.length >= 3 ? calculateShoelaceArea(this.floorPoints) : 0;
+    const furnitureFootprintArea = this.calculateFurnitureFootprintArea(area);
+    const freeFloorArea = Math.max(0, Math.round((area - furnitureFootprintArea) * 100) / 100);
     const perimeter = calculatePerimeter(this.floorPoints, this.isFloorClosed);
     let height = 0;
     if (this.ceilingPoint && this.floorPoints.length > 0) {
@@ -557,6 +967,9 @@ export class RoomManager {
       pointCount: this.floorPoints.length,
       currentSegmentLength: liveDistance,
       floorArea: area,
+      furnitureFootprintArea,
+      freeFloorArea,
+      furnitureCount: this.furniture.length,
       perimeter,
       ceilingHeight: height,
       volume,
@@ -597,6 +1010,8 @@ export class RoomManager {
       unitSystem: this.unitSystem,
       metrics: {
         floorAreaSqMeters: metrics.floorArea,
+        furnitureFootprintSqMeters: metrics.furnitureFootprintArea,
+        freeFloorAreaSqMeters: metrics.freeFloorArea,
         floorPerimeterMeters: metrics.perimeter,
         ceilingHeightMeters: metrics.ceilingHeight,
         roomVolumeCuMeters: metrics.volume,
@@ -605,6 +1020,8 @@ export class RoomManager {
         netWallAreaSqMeters: metrics.netWallArea,
         formatted: {
           floorArea: formatArea(metrics.floorArea, this.unitSystem, true),
+          furnitureFootprintArea: formatArea(metrics.furnitureFootprintArea, this.unitSystem, true),
+          freeFloorArea: formatArea(metrics.freeFloorArea, this.unitSystem, true),
           floorPerimeter: formatDistance(metrics.perimeter, this.unitSystem),
           ceilingHeight: formatDistance(metrics.ceilingHeight, this.unitSystem),
           roomVolume: formatVolume(metrics.volume, this.unitSystem, true),
@@ -625,7 +1042,8 @@ export class RoomManager {
             z: parseFloat(this.ceilingPoint.z.toFixed(4))
           }
         : null,
-      openings: this.getOpenings()
+      openings: this.getOpenings(),
+      furniture: this.getFurniture()
     };
   }
 
@@ -637,7 +1055,8 @@ export class RoomManager {
       `Unit System: ${this.unitSystem.toUpperCase()}`,
       `Floor Corners: ${data.floorCoordinates.length}`,
       `Floor Perimeter: ${data.metrics.formatted.floorPerimeter}`,
-      `Floor Area: ${data.metrics.formatted.floorArea}`,
+      `Floor Area (Shell): ${data.metrics.formatted.floorArea}`,
+      `Free Floor Area: ${data.metrics.formatted.freeFloorArea}`,
       `Ceiling Height: ${data.metrics.formatted.ceilingHeight}`,
       `Room Volume: ${data.metrics.formatted.roomVolume}`
     ];
@@ -660,8 +1079,18 @@ export class RoomManager {
     if (data.openings.length > 0) {
       lines.push('Openings:');
       data.openings.forEach((o) => {
+        const wallInfo = o.wallIndex !== undefined ? ` on Wall #${o.wallIndex + 1}` : '';
+        const sillInfo = o.sillHeightMeters ? ` (sill ${formatDistance(o.sillHeightMeters, this.unitSystem)})` : '';
         lines.push(
-          `  - ${o.label} (${o.type}): ${formatDistance(o.widthMeters, this.unitSystem)} × ${formatDistance(o.heightMeters, this.unitSystem)}`
+          `  - ${o.label} (${o.type}${wallInfo}): ${formatDistance(o.widthMeters, this.unitSystem)} × ${formatDistance(o.heightMeters, this.unitSystem)}${sillInfo}`
+        );
+      });
+    }
+    if (data.furniture.length > 0) {
+      lines.push(`Furniture Silhouettes (${data.furniture.length}):`);
+      data.furniture.forEach((f) => {
+        lines.push(
+          `  - ${f.label}: ${formatDistance(f.widthMeters, this.unitSystem)} × ${formatDistance(f.depthMeters, this.unitSystem)} × ${formatDistance(f.heightMeters, this.unitSystem)} @ [${f.centerXZ[0].toFixed(2)}, ${f.centerXZ[1].toFixed(2)}]`
         );
       });
     }
@@ -676,7 +1105,7 @@ export class RoomManager {
     const data = this.getExportData();
     const pts = this.floorPoints;
     const width = 800;
-    const height = 920;
+    const height = 960;
     const planPad = 80;
     const planAreaW = width - planPad * 2;
     const planAreaH = 540;
@@ -704,6 +1133,45 @@ export class RoomManager {
     const toSvgY = (wz: number) => planTop + planAreaH / 2 + (wz - centerZ) * scale;
 
     const polyPoints = pts.map((p) => `${toSvgX(p.x).toFixed(1)},${toSvgY(p.z).toFixed(1)}`).join(' ');
+
+    const furnitureSvg = data.furniture
+      .map((f) => {
+        const cx = toSvgX(f.centerXZ[0]);
+        const cy = toSvgY(f.centerXZ[1]);
+        const pw = f.widthMeters * scale;
+        const pd = f.depthMeters * scale;
+        const deg = (f.yawRad * 180) / Math.PI;
+        const label = `${f.label} (${formatDistance(f.widthMeters, this.unitSystem)}×${formatDistance(f.depthMeters, this.unitSystem)})`;
+        return `<g transform="translate(${cx.toFixed(1)}, ${cy.toFixed(1)}) rotate(${deg.toFixed(1)})">
+      <rect x="${(-pw * 0.5).toFixed(1)}" y="${(-pd * 0.5).toFixed(1)}" width="${pw.toFixed(1)}" height="${pd.toFixed(1)}" rx="3" fill="rgba(16, 185, 129, 0.20)" stroke="#34d399" stroke-width="1.5"/>
+      <text x="0" y="3" fill="#a7f3d0" font-size="10" font-weight="600" text-anchor="middle">${this.escapeXml(label)}</text>
+    </g>`;
+      })
+      .join('\n  ');
+
+    const openingsSvg =
+      this.isFloorClosed && pts.length >= 3
+        ? data.openings
+            .filter((o) => o.wallIndex !== undefined && o.offsetAlongWallMeters !== undefined)
+            .map((o) => {
+              const p1 = pts[o.wallIndex!];
+              const p2 = pts[(o.wallIndex! + 1) % pts.length];
+              if (!p1 || !p2) return '';
+              const dx = p2.x - p1.x;
+              const dz = p2.z - p1.z;
+              const wallLen = Math.hypot(dx, dz);
+              if (wallLen < 0.05) return '';
+              const s0 = Math.max(0, Math.min(wallLen, o.offsetAlongWallMeters!));
+              const s1 = Math.max(s0 + 0.05, Math.min(wallLen, s0 + o.widthMeters));
+              const x0 = toSvgX(p1.x + (dx / wallLen) * s0);
+              const y0 = toSvgY(p1.z + (dz / wallLen) * s0);
+              const x1 = toSvgX(p1.x + (dx / wallLen) * s1);
+              const y1 = toSvgY(p1.z + (dz / wallLen) * s1);
+              const color = o.type === 'door' ? '#f59e0b' : '#38bdf8';
+              return `<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="#090d16" stroke-width="7" stroke-linecap="butt"/><line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="${color}" stroke-width="4" stroke-dasharray="${o.type === 'door' ? '6 3' : 'none'}"/>`;
+            })
+            .join('\n  ')
+        : '';
 
     const wallLabels: string[] = [];
     for (let i = 0; i < pts.length - 1; i++) {
@@ -780,31 +1248,40 @@ export class RoomManager {
       : ''
   }
 
+  <!-- Furniture Silhouettes -->
+  ${furnitureSvg}
+
+  <!-- Wall Openings -->
+  ${openingsSvg}
+
   <!-- Wall Labels & Corners -->
   ${wallLabels.join('\n  ')}
   ${cornerNodes}
 
   <!-- Specifications Panel -->
-  <rect x="24" y="680" width="${width - 48}" height="212" rx="14" fill="#0f172a" stroke="#38bdf8" stroke-opacity="0.35"/>
+  <rect x="24" y="680" width="${width - 48}" height="252" rx="14" fill="#0f172a" stroke="#38bdf8" stroke-opacity="0.35"/>
   <text x="44" y="712" fill="#00f2fe" font-size="13" font-weight="700" letter-spacing="1">MEASUREMENT SPECIFICATIONS</text>
 
-  <text x="44" y="748" fill="#94a3b8" font-size="12">FLOOR AREA</text>
+  <text x="44" y="748" fill="#94a3b8" font-size="12">FLOOR AREA (SHELL)</text>
   <text x="44" y="772" fill="#f8fafc" font-size="17" font-weight="700">${this.escapeXml(data.metrics.formatted.floorArea)}</text>
 
-  <text x="300" y="748" fill="#94a3b8" font-size="12">ROOM VOLUME</text>
-  <text x="300" y="772" fill="#f8fafc" font-size="17" font-weight="700">${this.escapeXml(data.metrics.formatted.roomVolume)}</text>
+  <text x="300" y="748" fill="#94a3b8" font-size="12">FREE FLOOR AREA (${data.furniture.length} items)</text>
+  <text x="300" y="772" fill="#34d399" font-size="17" font-weight="700">${this.escapeXml(data.metrics.formatted.freeFloorArea)}</text>
 
   <text x="560" y="748" fill="#94a3b8" font-size="12">CEILING HEIGHT</text>
   <text x="560" y="772" fill="#f8fafc" font-size="17" font-weight="700">${this.escapeXml(data.metrics.formatted.ceilingHeight)}</text>
 
-  <text x="44" y="822" fill="#94a3b8" font-size="12">PERIMETER</text>
-  <text x="44" y="846" fill="#f8fafc" font-size="16" font-weight="700">${this.escapeXml(data.metrics.formatted.floorPerimeter)}</text>
+  <text x="44" y="822" fill="#94a3b8" font-size="12">ROOM VOLUME</text>
+  <text x="44" y="846" fill="#f8fafc" font-size="16" font-weight="700">${this.escapeXml(data.metrics.formatted.roomVolume)}</text>
 
   <text x="300" y="822" fill="#94a3b8" font-size="12">GROSS WALL AREA</text>
   <text x="300" y="846" fill="#f8fafc" font-size="16" font-weight="700">${this.escapeXml(data.metrics.formatted.grossWallArea)}</text>
 
   <text x="560" y="822" fill="#94a3b8" font-size="12">NET WALL AREA (${data.openings.length} openings)</text>
   <text x="560" y="846" fill="#34d399" font-size="16" font-weight="700">${this.escapeXml(data.metrics.formatted.netWallArea)}</text>
+
+  <text x="44" y="896" fill="#94a3b8" font-size="12">PERIMETER</text>
+  <text x="44" y="920" fill="#f8fafc" font-size="15" font-weight="700">${this.escapeXml(data.metrics.formatted.floorPerimeter)}</text>
 </svg>`;
   }
 
@@ -850,8 +1327,10 @@ export class RoomManager {
           }
         : null,
       openings: this.getOpenings(),
+      furniture: this.getFurniture(),
       metrics: {
         floorAreaSqMeters: metrics.floorArea,
+        freeFloorAreaSqMeters: metrics.freeFloorArea,
         floorPerimeterMeters: metrics.perimeter,
         ceilingHeightMeters: metrics.ceilingHeight,
         roomVolumeCuMeters: metrics.volume,
@@ -878,6 +1357,15 @@ export class RoomManager {
       ? new THREE.Vector3(found.ceilingCoordinate.x, found.ceilingCoordinate.y, found.ceilingCoordinate.z)
       : null;
     this.openings = Array.isArray(found.openings) ? found.openings.map((o) => ({ ...o })) : [];
+    this.furniture = Array.isArray(found.furniture)
+      ? found.furniture.map((f) => ({ ...f, centerXZ: [f.centerXZ[0], f.centerXZ[1]] }))
+      : [];
+    this.openingMarkState = {
+      active: false,
+      type: 'door',
+      firstHit: null,
+      liveHit: null
+    };
 
     if (this.ceilingPoint && this.floorPoints.length >= 3) {
       this.isFloorClosed = true;
